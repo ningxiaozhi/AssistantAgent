@@ -95,6 +95,35 @@ wiki_store = PostgresWikiStore(db) if db.available else LocalWikiStore(...)
 
 ---
 
+## 排错：`extension "vector" is not available`
+
+这条报错 100% 说明**跑的是纯 postgres 镜像，不是 pgvector 镜像**。
+`check_pg.py` 会降级继续验非向量路径，并在第 ⑥ 步跳过。
+
+两种修法，选一个：
+
+**A. 换镜像（推荐，数据不丢）**
+
+pgvector 镜像是 `postgres:16` + 扩展，同一个 PGDATA 目录可以直接复用：
+
+```bash
+# 远端，改 compose 里的 image
+sed -i 's|image: postgres:16|image: pgvector/pgvector:pg16|' docker-compose.yml
+docker compose up -d            # 会用新镜像重建容器，卷不变
+docker exec assistant-db psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+**B. 往现有容器里装扩展（不用重建，但容器重建后会丢）**
+
+```bash
+docker exec -it <容器名> bash -c "apt-get update && apt-get install -y postgresql-16-pgvector"
+docker exec <容器名> psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+装完重跑 `python scripts/check_pg.py`，第 ⑥ 步应该变成 ✅。
+
+---
+
 ## 5. 备份（个人数据，别偷懒）
 
 ```bash

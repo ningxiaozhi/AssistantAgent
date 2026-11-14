@@ -77,6 +77,7 @@ async def main() -> int:
         return 1
 
     ok = True
+    vector_ok = True
     task_id: str | None = None
     repo = PostgresTaskRepo(db)
     wiki = PostgresWikiStore(db)
@@ -89,8 +90,25 @@ async def main() -> int:
 
     @step("② 应用 schema")
     async def _schema():
+        nonlocal vector_ok
         sql = (ROOT / "app" / "db" / "schema.sql").read_text(encoding="utf-8")
-        await db.execute(sql)
+        try:
+            await db.execute(sql)
+            vector_ok = True
+        except Exception as e:
+            # 没有 pgvector 时不要整盘放弃：去掉向量相关语句，把其余表先建起来，
+            # 这样至少能验证任务/权限/wiki 三条路径是否正常。
+            msg = str(e)
+            if "vector" not in msg.lower():
+                raise
+            reduced = "\n".join(
+                s + ";" for s in sql.split(";")
+                if s.strip()
+                and not any(k in s.lower() for k in ("vector", "halfvec", "hnsw", "kb_chunk"))
+            )
+            await db.execute(reduced)
+            vector_ok = False
+            print(f"   ⚠️  当前实例没有 pgvector，已跳过 kb_chunk。换成 pgvector/pgvector:pg16 镜像后重跑。")
         tables = await db.fetchval(
             "select count(*) from information_schema.tables where table_schema='app'"
         )
@@ -140,30 +158,43 @@ async def main() -> int:
 
     @step("⑦ 清理")
     async def _cleanup():
-        await vectors.delete_page(KB, PAGE)
+        try:
+            await vectors.delete_page(KB, PAGE)
+        except Exception:
+            pass  # 没有 kb_chunk 表（未装 pgvector）时忽略
         await wiki.delete_page(KB, PAGE)
         if task_id:
             await db.execute("delete from app.task where id=$1", uuid.UUID(task_id))
         return "已删除测试数据"
 
-    for fn in (_connect, _schema, _task, _perm, _wiki, _vector, _cleanup):
+    for fn in (_connect, _schema, _task, _perm, _wiki):
         ok = await fn() and ok
         if not ok:
             # 失败了也尽量把残留清掉
             try:
                 if task_id:
                     await db.execute("delete from app.task where id=$1", uuid.UUID(task_id))
-                await db.execute("delete from app.kb_chunk where kb_key=$1", KB)
                 await db.execute("delete from app.wiki_page where kb_key=$1", KB)
             except Exception:
                 pass
             break
 
+    if ok and vector_ok:
+        ok = await _vector() and ok
+    elif ok:
+        print(f"⏭️  ⑥ pgvector 建索引 + 检索  跳过（该实例未安装 vector 扩展）")
+
+    if ok:
+        await _cleanup()
+
     await db.close()
     print()
-    if ok:
+    if ok and vector_ok:
         print(f"{OK} 全部通过：Postgres 路径可用，wiki 与向量会自动切到数据库。")
         return 0
+    if ok:
+        print(f"⚠️  非向量路径全部通过。还差一步：把镜像换成 pgvector/pgvector:pg16 后重跑。")
+        return 2
     print(f"{BAD} 有步骤失败，按上面的报错修。")
     return 1
 

@@ -1,4 +1,4 @@
-"""任务仓储：两个实现，同一套接口。
+﻿"""任务仓储：两个实现，同一套接口。
 
 InMemory —— 单测与"没有数据库也能跑"的降级模式
 Postgres —— 线上用，带乐观锁
@@ -43,6 +43,28 @@ class VersionConflict(Exception):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+UUID_FIELDS = ("id", "parent_id", "task_id")
+TIME_FIELDS = ("created_at", "updated_at", "cancel_requested_at")
+
+
+def _norm(row: Any) -> dict[str, Any]:
+    """把 asyncpg 的行归一化成纯 JSON 友好的 dict。
+
+    必须做这一步：asyncpg 返回的 uuid 和 datetime 是对象，不是字符串。
+    不归一化的话，`task["id"]` 传回 `uuid.UUID(...)` 会炸，
+    而且内存仓储和 Postgres 仓储的行为会不一致——这种不一致最难查。
+    """
+    d = dict(row)
+    for k in UUID_FIELDS:
+        if d.get(k) is not None:
+            d[k] = str(d[k])
+    for k in TIME_FIELDS:
+        v = d.get(k)
+        if v is not None and not isinstance(v, str):
+            d[k] = v.isoformat()
+    return d
 
 
 class InMemoryTaskRepo:
@@ -169,17 +191,17 @@ class PostgresTaskRepo:
             model_version,
             uuid.UUID(parent_id) if parent_id else None,
         )
-        return dict(row)
+        return _norm(row)
 
     async def get(self, task_id: str) -> dict[str, Any] | None:
         row = await self.db.fetchrow("SELECT * FROM app.task WHERE id = $1", uuid.UUID(task_id))
-        return dict(row) if row else None
+        return _norm(row) if row else None
 
     async def list(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self.db.fetch(
             "SELECT * FROM app.task ORDER BY created_at DESC LIMIT $1", limit
         )
-        return [dict(r) for r in rows]
+        return [_norm(r) for r in rows]
 
     async def transition(
         self,
@@ -208,7 +230,7 @@ class PostgresTaskRepo:
         row = await self.db.fetchrow(sql, *values)
         if row is None:
             raise VersionConflict(f"任务 {task_id} 版本冲突或不存在")
-        return dict(row)
+        return _norm(row)
 
     async def request_cancel(self, task_id: str, reason: str | None = None) -> dict[str, Any] | None:
         row = await self.db.fetchrow(
@@ -224,7 +246,7 @@ class PostgresTaskRepo:
             uuid.UUID(task_id),
             reason,
         )
-        return dict(row) if row else None
+        return _norm(row) if row else None
 
     async def record_tool_call(self, task_id: str, **fields: Any) -> None:
         await self.db.execute(
@@ -263,4 +285,4 @@ class PostgresTaskRepo:
         rows = await self.db.fetch(
             "SELECT * FROM app.task WHERE state IN ('running', 'waiting_confirm', 'cancelling')"
         )
-        return [dict(r) for r in rows]
+        return [_norm(r) for r in rows]
