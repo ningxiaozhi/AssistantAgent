@@ -1,4 +1,4 @@
-"""配置加载：`config/` 目录是唯一来源。
+﻿"""配置加载：`config/` 目录是唯一来源。
 
 三层，各管各的：
     1. `config/app.yaml`  非敏感配置的唯一真相（进版本库，可 review、可 diff）
@@ -63,6 +63,7 @@ class LimitsConfig(_Strict):
 class PathsConfig(_Strict):
     models: str = "models.yaml"
     tools: str = "tools.yaml"
+    memory: str = "memory.yaml"
     prompts: str = "prompts"
 
 
@@ -82,6 +83,10 @@ class AppConfig(_Strict):
     @property
     def tools_path(self) -> Path:
         return self.config_dir / self.paths.tools
+
+    @property
+    def memory_path(self) -> Path:
+        return self.config_dir / self.paths.memory
 
     @property
     def prompts_dir(self) -> Path:

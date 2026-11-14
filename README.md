@@ -1,4 +1,4 @@
-﻿# AssistantAgent
+# AssistantAgent
 
 > 个人助理 Agent —— 学习 / 工作 / 生活，**一个入口，六层分工，五条铁律**。
 
@@ -19,13 +19,15 @@
 | 全链路 trace（含落库） | ✅ 可用 | `app/core/trace.py`、`app/db/trace_sink.py` |
 | 角色化模型路由 + 敏感强制本地 | ✅ 可用 | `app/agent/routing.py`、`config/models.yaml` |
 | **工具分层治理（profile → 库 → 工具）** | ✅ 可用 | `app/agent/toolbox.py`、`config/tools.yaml` |
+| **记忆：LLM Wiki 多知识库** | ✅ 可用（文件存储） | `app/memory/`、`config/memory.yaml` |
+| pgvector 向量索引 | 🚧 接口就绪，未在真库验证 | `app/memory/vector.py` |
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
 | **AgentScope 接入** | ⚠️ EXPERIMENTAL | `app/agent/factory.py` |
 | LLM Wiki 多库、pgvector VectorStore | 🚧 待实现 | 见路线图 |
 
 > 说明：AgentScope 2.x 的构造参数仍在演进，`AgentScopeRuntime` 里按你锁定的版本校准一遍再上生产。
-> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 62 条全绿。
+> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 84 条全绿。
 
 ---
 
@@ -154,6 +156,45 @@ curl -G localhost:8000/api/tools/route --data-urlencode "q=明天的会挪到下
 
 ---
 
+## 记忆
+
+知识不是"文档块"，而是**由 LLM 维护的 Markdown 页面**，按类型分五个库：
+
+```
+me     个人画像   偏好 / 作息 / 关系 / 目标      常驻注入，不靠检索
+work   工作       项目、会议结论、承诺           按需检索
+learn  学习       读书笔记、概念卡               按需检索
+life   生活       健康、财务、家事               按需检索
+ref    参考资料   剪藏、教训清单                 只读
+```
+
+检索和工具治理是同构的：**先定库，再定页，最后才取正文**。
+
+```bash
+curl "localhost:8000/api/memory/search?q=上次和张总聊的定价结论"
+# kbs=["me","work"]  hits=[me/profile.md, work/pricing-2026-10.md]
+```
+
+三个关键约定：
+
+1. **索引只有 name + description，没有正文**。50 条索引 ≈ 1.5k token，50 页正文 ≈ 25 万 token —— 这就是渐进式披露的全部意义。
+2. **description 是给检索用的**。写成"关于 XX"等于没写，检索永远不会命中。
+3. **写入能合并就合并**。定位到已有页面 → 追加小节 → 刷新索引；同一段内容不会追加第二次（幂等）。
+
+存进去看一眼：
+
+```bash
+curl -X POST localhost:8000/api/memory/pages \
+  -H "Content-Type: application/json" \
+  -d '{"text":"张总的定价：阶梯定价 85 折，账期 60 天","kb":"work"}'
+# {"action":"merged","kb":"work","path":"pricing-2026-10.md"}   ← 没有新建重复页
+```
+
+页面就是普通 Markdown（`data/wiki/<库>/<页>.md`），**用 Obsidian 打开就能改**。
+换成 Postgres 存储只需在 `main.py` 换一行构造（`PostgresWikiStore`，同一接口）。
+
+---
+
 ## 目录
 
 ```
@@ -166,6 +207,11 @@ app/
 │   ├── cancel.py        # 取消三通道 + 四个安全点 + 补偿
 │   ├── runner.py        # 中枢：提交 → 执行 → 取消 → 落状态
 │   └── trace.py         # 全链路事件
+├── memory/
+│   ├── wiki.py          # 页面模型：frontmatter / 索引 / 渐进式披露
+│   ├── store.py         # 文件系统 / Postgres 两套存储，同一接口
+│   ├── router.py        # 先定库再定页 + 写入合并与幂等
+│   └── vector.py        # pgvector 索引（页面之上的一层）
 ├── agent/
 │   ├── routing.py       # 角色 → 模型，敏感强制本地，降级链
 │   ├── toolbox.py       # 工具分层治理：profile → 库 → 工具，路由与权限封顶
@@ -184,7 +230,7 @@ config/
 └── prompts/system.md    # 系统提示词，改行为不用改代码
 eval/                    # 离线评测：cases / fixtures / runner / score
 docs/                    # 架构说明、评测方案、架构图
-tests/                   # 62 条 unittest
+tests/                   # 84 条 unittest
 ```
 
 ---
@@ -219,10 +265,16 @@ tests/                   # 62 条 unittest
 python -m unittest discover -s tests -v
 ```
 
-62 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
-父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / 工具库划分与路由 / 权限封顶 / HTTP 全链路。
+84 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
+父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / 工具库划分与路由 / 权限封顶 / 页面模型与索引 / 记忆检索与写入合并 / HTTP 全链路。
 
 不需要数据库、不需要模型、不需要网络。
+
+想一眼看完主链路（工具路由 → 记忆检索 → 写入合并 → 一次对话）：
+
+```bash
+python scripts/smoke.py
+```
 
 ---
 

@@ -164,6 +164,76 @@ async def route_tools(
     return selection.model_dump()
 
 
+class MemoryWriteRequest(BaseModel):
+    text: str = Field(min_length=1)
+    kb: str | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    source: str | None = None
+
+
+@router.get("/api/memory", tags=["memory"])
+async def list_memory(request: Request) -> dict[str, Any]:
+    """知识库全景：有哪些库、常驻与否、写入策略。"""
+    c = ctx(request)
+    if c.memory is None:
+        return {"available": False, "note": "记忆配置未加载"}
+    return {
+        "available": True,
+        "libraries": c.memory.config.summary(),
+        "profiles": c.memory.config.profiles,
+        "defaults": c.memory.config.defaults.model_dump(),
+        "stats": c.wiki_store.stats() if hasattr(c.wiki_store, "stats") else {},
+    }
+
+
+@router.get("/api/memory/search", tags=["memory"])
+async def search_memory(
+    request: Request, q: str, profile: str | None = None, kbs: str | None = None
+) -> dict[str, Any]:
+    """两段式检索：先定库，再定页。返回的是页面指针，不是正文。"""
+    c = ctx(request)
+    if c.memory is None:
+        raise HTTPException(503, "记忆配置未加载")
+    explicit = [x.strip() for x in kbs.split(",") if x.strip()] if kbs else None
+    try:
+        selection = await c.memory.route(q, profile=profile, explicit=explicit)
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return selection.model_dump()
+
+
+@router.get("/api/memory/index", tags=["memory"])
+async def memory_index(request: Request, kb: str) -> dict[str, Any]:
+    """一个库的索引：注入 prompt 的就是这段（不含正文）。"""
+    c = ctx(request)
+    if c.memory is None:
+        raise HTTPException(503, "记忆配置未加载")
+    if kb not in c.memory.config.libraries:
+        raise HTTPException(404, f"未知的库: {kb}")
+    return {"kb": kb, "index": await c.memory.index_for(kb)}
+
+
+@router.post("/api/memory/pages", status_code=201, tags=["memory"])
+async def write_memory(request: Request, body: MemoryWriteRequest) -> dict[str, Any]:
+    """写入：能并进已有页面就绝不新建（避免同一件事有五个版本）。"""
+    c = ctx(request)
+    if c.memory_writer is None:
+        raise HTTPException(503, "记忆配置未加载")
+    try:
+        return await c.memory_writer.write(
+            text=body.text,
+            kb=body.kb,
+            title=body.title,
+            description=body.description,
+            tags=body.tags,
+            source=body.source,
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {
@@ -174,4 +244,6 @@ async def root() -> dict[str, str]:
         "cancel": "POST /api/tasks/{id}/cancel",
         "tools": "GET /api/tools",
         "route": "GET /api/tools/route?q=...",
+        "memory": "GET /api/memory",
+        "memory_search": "GET /api/memory/search?q=...",
     }

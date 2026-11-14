@@ -1,4 +1,4 @@
-"""Agent 运行时：一个接口，两个实现。
+﻿"""Agent 运行时：一个接口，两个实现。
 
 echo       —— 不需要任何模型就能跑通「状态机 → 安全点 → trace → 取消」整条链路
 agentscope —— 真实 Agent（需自行校准 API 版本，见下方注释）
@@ -57,11 +57,13 @@ class EchoRuntime:
         delay: float = 0.12,
         catalog: ToolCatalog | None = None,
         tool_router: ToolRouter | None = None,
+        memory_router: Any = None,
     ) -> None:
         self.steps = steps
         self.delay = delay
         self.catalog = catalog
         self.tool_router = tool_router
+        self.memory_router = memory_router
 
     async def run(
         self,
@@ -74,6 +76,7 @@ class EchoRuntime:
     ) -> str:
         selection = self._select(user_input, trace)
         await self._record_selection(selection, trace)
+        memory = await self._select_memory(user_input, trace)
 
         plan = ["理解意图", "装配上下文", "生成回答"][: self.steps]
         for i, label in enumerate(plan, 1):
@@ -85,9 +88,11 @@ class EchoRuntime:
 
         await trace.record("task.echo", note="echo 模式，未调用真实模型")
         libs = "、".join(selection.libraries) if selection else "（无）"
+        mem = "、".join(memory.kbs) if memory else "（无）"
+        hits = f"，命中 {len(memory.hits)} 页" if memory and memory.hits else ""
         return (
             f"（echo 模式）收到：「{user_input}」。\n"
-            f"已选定工具库：{libs}；走完 {len(plan)} 步并全程留痕。\n"
+            f"已选定工具库：{libs}；记忆库：{mem}{hits}；走完 {len(plan)} 步并全程留痕。\n"
             f"接上 AgentScope 后这里会是真实回答。"
         )
 
@@ -110,6 +115,22 @@ class EchoRuntime:
             reason=selection.reason,
         )
 
+    async def _select_memory(self, text: str, trace: Trace):
+        if self.memory_router is None:
+            return None
+        try:
+            selection = await self.memory_router.route(text)
+        except Exception as e:  # 记忆检索失败也只降级，不该让任务挂掉
+            log.warning("记忆检索失败: %s", e)
+            return None
+        await trace.record(
+            "memory.select",
+            kbs=selection.kbs,
+            hits=[f"{h.kb}/{h.path}" for h in selection.hits],
+            reason=selection.reason,
+        )
+        return selection
+
 
 class AgentScopeRuntime:
     """真实 Agent。⚠️ EXPERIMENTAL：AgentScope 2.x 的构造参数请以你锁定的版本为准。
@@ -129,12 +150,14 @@ class AgentScopeRuntime:
         router: ModelRouter,
         config: AppConfig,
         catalog: ToolCatalog | None = None,
+        memory_router: Any = None,
         role: str | None = None,
         profile: str | None = None,
     ) -> None:
         self.router = router
         self.config = config
         self.catalog = catalog
+        self.memory_router = memory_router
         self.tool_router = ToolRouter(catalog) if catalog else None
         self.role = role or config.runtime.default_role
         self.profile = profile
@@ -177,8 +200,26 @@ class AgentScopeRuntime:
             reason=resolved.reason,
         )
 
+        # --- 记忆：先选库，再把命中页的**索引**（不是正文）拼进提示 ---
+        memory_hint = ""
+        if self.memory_router is not None:
+            mem = await self.memory_router.route(user_input, profile=self.profile)
+            await trace.record(
+                "memory.select",
+                kbs=mem.kbs,
+                hits=[f"{h.kb}/{h.path}" for h in mem.hits],
+                reason=mem.reason,
+            )
+            if mem.hits:
+                lines = "\n".join(
+                    f"- [{h.kb}] {h.name}（{h.path}）：{h.description}" for h in mem.hits
+                )
+                memory_hint = f"\n\n## 可能相关的记忆（先看索引，需要再取正文）\n{lines}"
+
         model = _build_chat_model(resolved.spec)
-        agent = Agent(name="assistant", system_prompt=self.system_prompt, model=model)
+        agent = Agent(
+            name="assistant", system_prompt=self.system_prompt + memory_hint, model=model
+        )
 
         await scope.checkpoint("before_model_call")
         reply = await agent.reply(user_input)
@@ -228,24 +269,27 @@ def _as_text(reply: Any) -> str:
 
 
 def build_runtime(
-    config: AppConfig, router: ModelRouter, catalog: ToolCatalog | None = None
+    config: AppConfig,
+    router: ModelRouter,
+    catalog: ToolCatalog | None = None,
+    memory_router: Any = None,
 ) -> Runtime:
     backend = config.runtime.agent_backend.lower()
     has_agentscope = importlib.util.find_spec("agentscope") is not None
     tool_router = ToolRouter(catalog) if catalog else None
 
     if backend == "echo":
-        return EchoRuntime(catalog=catalog, tool_router=tool_router)
+        return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)
     if backend == "agentscope":
         if not has_agentscope:
             raise RuntimeError("agent_backend=agentscope 但未安装：pip install 'agentscope>=2.0'")
-        return AgentScopeRuntime(router, config, catalog)
+        return AgentScopeRuntime(router, config, catalog, memory_router)
     # auto
     if has_agentscope:
         try:
-            return AgentScopeRuntime(router, config, catalog)
+            return AgentScopeRuntime(router, config, catalog, memory_router)
         except Exception as e:  # 配错模型也别让服务起不来
             log.warning("AgentScope 初始化失败(%s)，降级 echo", e)
-            return EchoRuntime(catalog=catalog, tool_router=tool_router)
+            return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)
     log.info("未安装 agentscope，使用 echo 模式（状态机/取消/trace 全部可用）")
-    return EchoRuntime(catalog=catalog, tool_router=tool_router)
+    return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)

@@ -35,4 +35,5 @@ limits:
 paths:
   models: models.yaml
   tools: tools.yaml
+  memory: memory.yaml
   prompts: prompts

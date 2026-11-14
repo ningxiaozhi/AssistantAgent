@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS app.wiki_page (
     type       text,
     title      text,
     summary    text,                                    -- 给检索用，必须写具体
+    body       text,                                    -- 页面正文（权威内容）
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (kb_key, path)
 );

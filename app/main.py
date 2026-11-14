@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -19,12 +20,14 @@ from app.agent.factory import Runtime, build_runtime
 from app.agent.routing import ModelRouter
 from app.agent.toolbox import ToolCatalog, ToolRouter
 from app.api.routes import router as api_router
-from app.config import AppConfig, ConfigError
+from app.config import ROOT, AppConfig, ConfigError
 from app.core.cancel import TaskRegistry
 from app.core.runner import TaskRunner
 from app.db.pool import Database
 from app.db.repo import InMemoryTaskRepo, PostgresTaskRepo
 from app.db.trace_sink import PostgresTraceSink
+from app.memory import LocalWikiStore, MemoryConfig, MemoryRouter, MemoryWriter
+from app.memory.store import PostgresWikiStore
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +44,9 @@ class AppContext:
     model_version: str
     catalog: ToolCatalog | None = None
     tool_router: ToolRouter | None = None
+    memory: MemoryRouter | None = None
+    memory_writer: MemoryWriter | None = None
+    wiki_store: Any = None
 
 
 class _NullRouter:
@@ -80,7 +86,26 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except Exception as e:
             log.error("工具配置加载失败（%s），本次运行不挂载工具", e)
 
-        runtime = build_runtime(cfg, router, catalog)  # type: ignore[arg-type]
+        # 记忆层：wiki 多库。库没装好也不影响服务起来
+        memory_cfg: MemoryConfig | None = None
+        memory_router: MemoryRouter | None = None
+        memory_writer: MemoryWriter | None = None
+        wiki_store: Any = None
+        try:
+            memory_cfg = MemoryConfig.load(cfg.memory_path)
+            if db.available:
+                wiki_store = PostgresWikiStore(db)
+            else:
+                seed = Path(memory_cfg.defaults.seed_dir)
+                if not seed.is_absolute():
+                    seed = ROOT / seed
+                wiki_store = LocalWikiStore(ROOT / "data" / "wiki", seed_dir=seed)
+            memory_router = MemoryRouter(memory_cfg, wiki_store)
+            memory_writer = MemoryWriter(memory_cfg, wiki_store)
+        except Exception as e:
+            log.error("记忆配置加载失败（%s），本次运行不挂载记忆", e)
+
+        runtime = build_runtime(cfg, router, catalog, memory_router)  # type: ignore[arg-type]
         sink = PostgresTraceSink(db) if db.available else None
         runner = TaskRunner(repo, TaskRegistry(), runtime, cfg, sink)
 
@@ -95,14 +120,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             model_version=model_version,
             catalog=catalog,
             tool_router=ToolRouter(catalog) if catalog else None,
+            memory=memory_router,
+            memory_writer=memory_writer,
+            wiki_store=wiki_store,
         )
         log.info(
-            "启动完成 | config=%s | db=%s | agent=%s | roles=%d | tools=%s",
+            "启动完成 | config=%s | db=%s | agent=%s | roles=%d | tools=%s | memory=%s",
             cfg.config_dir,
             "postgres" if db.available else "memory",
             runtime.name,
             len(router.all_roles()),
             f"{catalog.stats()['libraries']}库/{catalog.stats()['tools']}工具" if catalog else "none",
+            f"{len(memory_cfg.libraries)}库" if memory_cfg else "none",
         )
         try:
             yield

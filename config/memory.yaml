@@ -1,0 +1,63 @@
+# ============================================================
+# 记忆：LLM Wiki 多知识库
+#
+# 为什么分库而不是一个大库：
+#   不同知识的"检索胃口"完全不同 —— 画像只有几行，要常驻；
+#   资料库几万篇，只能 Top-K。混在一起，要么全塞、要么全召，怎么调都不对。
+#
+# 为什么是 Markdown 页面而不是向量块：
+#   页面是给人看、也是给 LLM 改的单元。块检索能"找到"，但改不了、合并不了、
+#   也没法让 LLM 判断"这条该并到哪一页"。向量只是页面之上的一层索引。
+# ============================================================
+
+version: 1
+
+defaults:
+  max_kbs_per_query: 2       # 一次最多检索两个库，防止又变成全量扫
+  pages_per_kb: 3            # 每个库最多返回几页
+  min_page_score: 0.12       # 低于这个分数视为不相关，宁可不给
+  fallback: [me, ref]        # 一个都没命中时的兜底
+  merge_threshold: 0.35      # 写入时：相似度高于它 → 合并进已有页面，不新建
+  seed_dir: examples/wiki    # 首次启动时从示例库初始化
+
+# 子代理能看到哪些库（与 tools.yaml 的 profiles 同一套思路）
+profiles:
+  work: [me, work, ref]
+  learning: [me, learn, ref]
+  life: [me, life]
+
+libraries:
+  - id: me
+    name: 个人画像
+    description: 偏好、作息、饮食忌口、关系网、长期目标、雷区
+    triggers: [我, 我的, 喜欢, 偏好, 习惯, 作息, 忌口, 目标, 计划]
+    always_on: true            # 常驻注入，不靠检索
+    write_policy: confirm      # 写入先进 inbox，第二天早报确认
+
+  - id: work
+    name: 工作
+    description: 项目、会议结论、决策、承诺、客户与人名
+    triggers: [项目, 会议, 客户, 张总, 报价, 决策, 复盘, 交付]
+    always_on: false
+    write_policy: auto
+
+  - id: learn
+    name: 学习
+    description: 读书笔记、课程笔记、概念卡、错题与心得
+    triggers: [笔记, 书, 课程, 概念, 学习, 论文, 章节]
+    always_on: false
+    write_policy: auto
+
+  - id: life
+    name: 生活
+    description: 健康、财务、家事、出行、常去的地方
+    triggers: [健康, 体检, 账单, 家里, 旅行, 买, 医院]
+    always_on: false
+    write_policy: confirm
+
+  - id: ref
+    name: 参考资料
+    description: 剪藏、外部资料、教训清单，只读
+    triggers: [资料, 参考, 收藏, 剪藏, 教训]
+    always_on: false
+    write_policy: append

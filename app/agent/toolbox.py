@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -25,6 +24,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agent.tools import HANDLERS, Tool, ToolRegistry
+from app.core.text import bigram_overlap, contains_any
 
 PERMISSION_RANK = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
 
@@ -273,26 +273,12 @@ class ToolRouter:
         score = 0.0
 
         # 触发词命中权重最高：它是人写的，最准
-        for trigger in lib.triggers:
-            if trigger and trigger in text:
-                score += 3.0
+        score += 3.0 * contains_any(text, lib.triggers)
 
-        score += 2.0 * _overlap(text, lib.description)
+        score += 2.0 * bigram_overlap(text, lib.description)
         for spec in lib.tools:
             short = spec.name.split(".")[-1].lower()
             if short and short in text:
                 score += 2.0
-            score += _overlap(text, spec.description)
+            score += bigram_overlap(text, spec.description)
         return score
-
-
-def _overlap(query: str, text: str) -> float:
-    """字符二元组重合度：中文没空格，这个够用且不引入依赖。"""
-    def grams(s: str) -> set[str]:
-        s = re.sub(r"\s+", "", s or "")
-        return {s[i : i + 2] for i in range(len(s) - 1)}
-
-    qg, tg = grams(query), grams(text)
-    if not qg or not tg:
-        return 0.0
-    return len(qg & tg) / len(qg)

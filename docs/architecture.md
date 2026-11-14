@@ -236,6 +236,21 @@ Avro 靠 writer/reader schema 解决，Protobuf 靠字段编号 + 可选字段�
 
 ---
 
+### 4.6 落地映射
+
+| 设计 | 落在哪 |
+|---|---|
+| 页面模型（frontmatter / 索引 / 序列化） | `app/memory/wiki.py` |
+| 五库划分、常驻与写入策略 | `config/memory.yaml` |
+| 存储（文件系统 / Postgres，同一接口） | `app/memory/store.py` |
+| 两段式检索 + 写入合并与幂等 | `app/memory/router.py` |
+| 页面之上的向量索引 | `app/memory/vector.py`（接口就绪，未在真库验证） |
+
+检索与工具治理用的是同一套思路：**先定库，再在库内找**。区别只在于记忆多了一层"渐进式披露"——
+先给索引（name + description），需要时再取正文。
+
+---
+
 ## 5. 任务生命周期与取消
 
 这是个人助理和"聊天机器人"的分水岭：**你随时得能喊停，而且停得干净。**
