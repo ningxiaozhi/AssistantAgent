@@ -262,8 +262,12 @@ class AgentScopeRuntime:
                 memory_hint = f"\n\n## 可能相关的记忆（先看索引，需要再取正文）\n{lines}"
 
         model = _build_chat_model(resolved.spec)
+        toolkit = _build_toolkit(tools)
         agent = Agent(
-            name="assistant", system_prompt=self.system_prompt + memory_hint, model=model
+            name="assistant",
+            system_prompt=self.system_prompt + memory_hint,
+            model=model,
+            tools=toolkit,  # ⚠️ CALIBRATE #1：参数名可能是 toolkit=，用 scripts/check_agentscope.py 确认
         )
 
         await scope.checkpoint("before_model_call")
@@ -311,6 +315,41 @@ def _as_text(reply: Any) -> str:
         if isinstance(value, str):
             return value
     return str(reply)
+
+
+def _build_toolkit(registry: Any) -> Any:
+    """把我们的 ToolRegistry 转成 AgentScope 的 Toolkit。
+
+    ⚠️ CALIBRATE #2：Toolkit 的注册方式在各小版本间变过（register / add_function / 装饰器）。
+    这里按"注册一个 async 函数"的通用形状写，装配失败就降级为不带工具，
+    绝不让工具注册把整个会话搞挂。
+
+    返回值约定：统一成 {ok, data, error} 字典——
+    模型看到的是这个结构，而不是我们的内部对象。
+    """
+    if registry is None:
+        return None
+    try:
+        from agentscope.toolkit import Toolkit
+    except ImportError:
+        log.warning("找不到 agentscope.toolkit.Toolkit，本次不挂载工具")
+        return None
+
+    toolkit = Toolkit()
+    for tool in registry:
+
+        async def _call(_tool=tool, **kwargs):
+            result = await _tool.handler(kwargs)
+            return {"ok": result.ok, "data": result.data, "error": result.error}
+
+        _call.__name__ = tool.name.replace(".", "_")
+        _call.__doc__ = tool.description
+        try:
+            toolkit.register(_call)
+        except AttributeError:
+            log.warning("Toolkit.register 不可用，工具 %s 未注册", tool.name)
+            return None
+    return toolkit
 
 
 def build_runtime(

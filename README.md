@@ -21,14 +21,14 @@
 | **工具分层治理（profile → 库 → 工具）** | ✅ 可用 | `app/agent/toolbox.py`、`config/tools.yaml` |
 | **记忆：LLM Wiki 多知识库** | ✅ 可用（文件存储） | `app/memory/`、`config/memory.yaml` |
 | **HITL 确认闸门** | ✅ 可用 | `app/core/confirm.py` |
-| pgvector 向量索引 | 🚧 接口就绪，未在真库验证 | `app/memory/vector.py` |
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
+| Postgres 存储（wiki / 向量） | 🚧 代码就绪，需在真库验证 | `scripts/check_pg.py` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
-| **AgentScope 接入** | ⚠️ EXPERIMENTAL | `app/agent/factory.py` |
-| LLM Wiki 多库、pgvector VectorStore | 🚧 待实现 | 见路线图 |
+| **AgentScope 接入** | ⚠️ EXPERIMENTAL | [接入指南](docs/integration-agentscope.md) |
 
-> 说明：AgentScope 2.x 的构造参数仍在演进，`AgentScopeRuntime` 里按你锁定的版本校准一遍再上生产。
-> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 97 条全绿。
+> 说明：AgentScope 适配层是照官方文档写的，没对着真实版本跑过（开发机 PyPI 不可达）。
+> 装完 agentscope 跑一次 `python scripts/check_agentscope.py`，它会逐条告诉你哪里对不上。
+> 其余代码有测试覆盖：`python -m unittest discover -s tests` 97 条通过（5 条 AgentScope 契约测试在未安装时自动跳过）。
 
 ---
 
@@ -262,6 +262,8 @@ config/
 └── prompts/system.md    # 系统提示词，改行为不用改代码
 eval/                    # 离线评测：cases / fixtures / runner / score
 docs/                    # 架构说明、评测方案、架构图
+deploy/                  # 远程 Postgres：compose + env + 隧道/备份说明
+scripts/                 # smoke / check_agentscope / check_pg 三个验证脚本
 tests/                   # 97 条 unittest
 ```
 
@@ -302,7 +304,7 @@ python -m unittest discover -s tests -v
 
 不需要数据库、不需要模型、不需要网络。
 
-想一眼看完主链路（工具路由 → 记忆检索 → 写入合并 → 一次对话）：
+想一眼看完主链路（工具路由 → 记忆检索 → 写入合并 → 对话 → 确认闸门）：
 
 ```bash
 python scripts/smoke.py
@@ -325,16 +327,19 @@ cat eval/report/demo/report.md
 
 ## 路线图
 
-- [ ] **记忆层**：LLM Wiki 多库（me/work/learn/life/ref）+ 索引与页面维护任务
-- [ ] **pgvector VectorStore**：实现 AgentScope `VectorStoreBase`，接 `KnowledgeBase` handle
-- [ ] **HITL 全链路**：`waiting_confirm` → 确认/拒绝接口 → 权限规则固化
+- [x] **记忆层**：LLM Wiki 多库（me/work/learn/life/ref）+ 索引与渐进式披露
+- [x] **HITL 全链路**：`waiting_confirm` → 确认/拒绝接口 → 审计
 - [ ] **SSE 事件流**：替代轮询，断线可补历史
-- [ ] **AgentScope 接入校准**：按锁定版本对齐模型构造与工具注册
+- [ ] **AgentScope 接入校准**：跑 `scripts/check_agentscope.py` 后对齐三个校准点
+- [ ] **Postgres 路径验证**：跑 `scripts/check_pg.py`（需要一台能连到的 pgvector）
+- [ ] **权限规则固化**：用户同意过的动作变成 allow 规则，减少重复打扰
 - [ ] **影子模式**：写工具 dry-run，只记录不执行
 
 ---
 
 ## 相关文档
 
-- [架构说明](docs/architecture.md) —— 六层职责、取消逻辑、模型路由、日志与回放
+- [架构说明](docs/architecture.md) —— 六层职责、取消逻辑、工具治理、记忆分层、日志与回放
 - [评测方案](docs/eval-plan.md) —— 五层指标、三条铁律、计分卡与门禁
+- [接入 AgentScope](docs/integration-agentscope.md) —— 四步 + 三个校准点 + 排查顺序
+- [远程 Postgres 部署](deploy/README.md) —— SSH 隧道、备份恢复、安全检查清单
