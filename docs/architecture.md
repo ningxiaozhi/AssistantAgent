@@ -28,7 +28,7 @@
 | 触点层 | — | 微信/Telegram 适配器、ASR/TTS 接入 |
 | 接入网关 | Agent Service（`create_app`）已含会话、SSE、后台任务、定时器、中断 | 渠道适配 + 富媒体解析 + 任务表 |
 | 智能体核心 | `Agent`（ReAct 循环）、`Plan`、`Permission`、`Middleware`、`Agent Team` | 子代理编排、路由策略、模型绑定 |
-| 能力层 | `Tool` / MCP、Tool Middleware | 业务工具（日历、邮件、笔记…）+ 幂等与补偿 |
+| 能力层 | `Tool` / MCP、Tool Middleware | 业务工具（日历、邮件、笔记…）+ 幂等与补偿；**按库分组、按 profile 可见（见 §11）** |
 | 记忆与知识 | `AgenticMemoryMiddleware`（Markdown wiki）、`KnowledgeBase`（RAG） | 多库划分、**pgvector 的 VectorStore 实现**、wiki 维护任务 |
 | 模型与底座 | `Credential` + `ChatModelBase`（OpenAI / Anthropic / DashScope / DeepSeek / Ollama …）、内置 Tracing 与 Budget Control | 角色化路由配置、pgvector 存储、部署与观测 |
 
@@ -526,7 +526,124 @@ L2 是排查的王牌：同一份输入，老版本复现出错误、新版本�
 
 ---
 
+## 11. 工具治理：profile → 库 → 工具
+
+> 动机：工具一多，最省事的做法（全量注册、全量注入）会同时坏三件事。
+
+### 11.1 为什么不能再平铺
+
+工具超过 20 个以后：
+
+| 后果 | 具体表现 |
+|---|---|
+| **选择准确率下降** | 候选从 5 个变 30 个，模型挑错工具的概率显著上升 |
+| **上下文被工具定义吃掉** | 30 个工具的 schema 轻松占掉 4–6k token，挤掉真正的上下文 |
+| **权限失控** | 一张平铺列表，只要有一项配置错，整批工具都暴露给模型 |
+
+分库之后有个副作用是好事：**看不见的工具 = 不可能被误调用**。这本身就是最便宜的安全措施。
+
+实测（本项目 7 库 11 工具，echo 模式）：
+
+```
+"把明天的产品评审挪到下午两点"  → calendar            → 挂 2 个工具（不是 11 个）
+"给张总回一封邮件"             → mail                → 挂 1 个
+"今天打车花了 38 块"           → life, system        → 挂 3 个
+"嗯嗯"                        → notes, system（兜底）→ 挂 4 个
+```
+
+### 11.2 三层各自管什么
+
+| 层 | 回答什么问题 | 存在哪 | 谁改 |
+|---|---|---|---|
+| **profile** | 谁在用？能看哪些库？ | `config/tools.yaml: profiles` | 换子代理时 |
+| **library** | 这是哪类能力？权限封顶多少？ | `config/tools.yaml: libraries` | 加能力域时 |
+| **tool** | 具体做什么？什么副作用？ | 同上，`libraries[].tools` | 加/停用动作时 |
+
+profile 直接对应架构 §3.2 的子代理绑定矩阵：
+
+```yaml
+profiles:
+  work:     [calendar, mail, notes, task, research, system]
+  learning: [notes, research, task, system]        # 学习教练看不到邮件库
+  life:     [calendar, task, life, notes, system]
+```
+
+**"学习教练看不到邮件库"是由配置保证的，不是靠提示词求它别发。**
+
+### 11.3 一次任务取工具的过程
+
+```
+用户输入
+  │
+  ├─ ① profile 过滤 ── 该角色能看哪些库
+  │
+  ├─ ② 路由打分  ── 触发词(权重3) + 库描述重合(2) + 工具名/描述重合(1)
+  │                  取 top-N（默认 2 个库），一个都没命中就回落兜底库
+  │
+  ├─ ③ 展开工具  ── 只把选中库里的工具装配成 ToolRegistry
+  │
+  └─ ④ 进 prompt ── 只有这些工具的 schema 会出现在模型眼前
+```
+
+对应代码：`app/agent/toolbox.py` 的 `ToolCatalog.resolve()` 与 `ToolRouter.route()`；
+每次选择都写进 trace（`kind=tools.select`），包含命中的库、工具清单和打分理由。
+
+### 11.4 权限在"库"这一层封顶
+
+这是治理的核心规则：**工具不能突破所属库的权限上限**。
+
+```yaml
+- id: mail
+  max_permission: L2        # 本库封顶 L2
+  tools:
+    - name: mail.draft
+      permission: L1        # 可以更保守，但不能更激进
+```
+
+如果有人往邮件库里塞一个 `permission: L3` 的"直接发送"工具，**启动就会失败**：
+
+```
+ToolConfigError: 库 mail / 工具 mail.send: permission L3 超过库上限 L2
+```
+
+同类校验还有：库默认权限不得高于上限、工具全局不能重名、handler 必须存在、
+profile 不能引用不存在的库。原则是——**宁可起不来，也别带着错配置静默运行**。
+
+### 11.5 路由刻意做成确定性的
+
+`ToolRouter._score()` 只做三件事：触发词命中、库描述重合、工具名/描述重合。**不调模型。**
+
+理由很实际：
+
+- 路由错了要能复现、能写测试。21 条工具治理测试里有一半是在钉这个行为
+- 多一次模型调用 = 多 300ms 延迟 + 多一次可能失败
+- 库的数量在 10 个量级时，关键词命中已经够准
+
+**什么时候该升级**：库超过 30 个、或同义表达多到触发词写不过来时，在 `_score()` 前面加一层
+embedding 召回即可，接口不变（`route(text, profile)` 的签名不用动）。
+
+### 11.6 排查"它为什么没用那个工具"
+
+按顺序问三个问题，每个都有对应手段：
+
+| 问题 | 怎么看 |
+|---|---|
+| 那个库压根没被选中？ | `GET /api/tools/route?q=...` 预览；或看 trace 的 `tools.select.reason` |
+| 库选中了，但工具没挂上？ | `config/tools.yaml` 里 `enabled: false`？还是 profile 不含这个库？ |
+| 工具挂上了，模型没选？ | 那就是工具描述的问题 —— 改 `description`，这是唯一该动的地方 |
+
+第三条最容易误判：**工具"没被调用"和"没被看见"是两回事**，先确认它到底有没有进上下文。
+
+### 11.7 边界
+
+- 一个工具只能属于一个库。日程同时被工作和生活需要，就都挂 `calendar` 库，用 profile 控制可见性，而不是复制工具
+- 路由是单轮的：一句话里跨两个领域（"订明天的会议室并给张总发邮件"）最多命中 2 个库，第三个会被截断
+- 库里工具超过 15 个时，库内选择又会退化成"平铺问题"，该考虑拆库了
+
+---
+
 ## 附录：一张表看完关键选型
+
 
 | 维度 | 选择 | 一句话理由 |
 |---|---|---|

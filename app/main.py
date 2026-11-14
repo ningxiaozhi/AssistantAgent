@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from app.agent.factory import Runtime, build_runtime
 from app.agent.routing import ModelRouter
+from app.agent.toolbox import ToolCatalog, ToolRouter
 from app.api.routes import router as api_router
 from app.config import AppConfig, ConfigError
 from app.core.cancel import TaskRegistry
@@ -38,6 +39,8 @@ class AppContext:
     runtime: Runtime
     runner: TaskRunner
     model_version: str
+    catalog: ToolCatalog | None = None
+    tool_router: ToolRouter | None = None
 
 
 class _NullRouter:
@@ -70,7 +73,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             router = _NullRouter()
             model_version = "unknown"
 
-        runtime = build_runtime(cfg, router)  # type: ignore[arg-type]
+        # 工具分层治理：库没装好不影响服务起来，只是这次没有工具可用
+        catalog: ToolCatalog | None = None
+        try:
+            catalog = ToolCatalog.load(cfg.tools_path)
+        except Exception as e:
+            log.error("工具配置加载失败（%s），本次运行不挂载工具", e)
+
+        runtime = build_runtime(cfg, router, catalog)  # type: ignore[arg-type]
         sink = PostgresTraceSink(db) if db.available else None
         runner = TaskRunner(repo, TaskRegistry(), runtime, cfg, sink)
 
@@ -83,13 +93,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             runtime=runtime,
             runner=runner,
             model_version=model_version,
+            catalog=catalog,
+            tool_router=ToolRouter(catalog) if catalog else None,
         )
         log.info(
-            "启动完成 | config=%s | db=%s | agent=%s | roles=%d",
+            "启动完成 | config=%s | db=%s | agent=%s | roles=%d | tools=%s",
             cfg.config_dir,
             "postgres" if db.available else "memory",
             runtime.name,
             len(router.all_roles()),
+            f"{catalog.stats()['libraries']}库/{catalog.stats()['tools']}工具" if catalog else "none",
         )
         try:
             yield

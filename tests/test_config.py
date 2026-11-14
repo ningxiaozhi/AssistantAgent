@@ -3,7 +3,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from app.agent.tools import load_registry
+from app.agent.toolbox import ToolCatalog
 from app.config import AppConfig, ConfigError
 
 HERE = Path(__file__).parent
@@ -36,9 +36,9 @@ class TestLoad(unittest.TestCase):
     def test_prompt_and_tools_resolve_from_config(self):
         cfg = AppConfig.load(env={})
         self.assertIn("个人助理", cfg.read_prompt())
-        registry = load_registry(cfg.tools_path)
-        self.assertIn("notes.create", registry.names())
-        self.assertIn("time.now", registry.names())
+        catalog = ToolCatalog.load(cfg.tools_path)
+        self.assertIn("calendar", catalog.library_ids())
+        self.assertIn("notes", catalog.library_ids())
 
 
 class TestBadConfig(unittest.TestCase):

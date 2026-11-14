@@ -1,24 +1,142 @@
 # ============================================================
-# 工具注册表。新增/停用/调权限都改这里，不改代码。
+# 工具分层治理：角色(profile) → 库(library) → 工具(tool)
 #
-# handler 指向 app/agent/tools.py 里的 HANDLERS 表。
-# 三个必填契约缺一不可：
-#   side_effect  none / reversible / external  → 决定取消时要不要补偿
-#   permission   L0..L3                        → 决定要不要过确认闸门
-#   enabled      停用工具不用删代码，改 false 即可
+# 为什么不再平铺：
+#   工具超过 20 个以后，把所有 schema 塞进一次 prompt 会有三个后果
+#     1. 选择准确率掉（候选太多）
+#     2. 上下文被工具定义吃掉
+#     3. 权限失控（一个库出事，全体背锅）
+#   所以改成两段式：先定位"该用哪个库"，再从库里挑工具。
+#
+# 三层各管一件事：
+#   profile —— 谁在用（工作助理 / 学习教练 / 生活管家），限定可见范围
+#   library —— 能力域（日程 / 邮件 / 笔记…），带默认权限与上限
+#   tool    —— 具体动作，可覆盖库的默认值，但**不能突破库的 max_permission**
 # ============================================================
 
-tools:
-  - name: notes.create
-    handler: notes_create
-    description: 把一句话记进收件箱，低风险，不需要确认
-    side_effect: reversible
-    permission: L1
-    enabled: true
+version: 1
 
-  - name: time.now
-    handler: time_now
-    description: 取当前时间。注意：评测时必须用冻结时间替代
-    side_effect: none
-    permission: L0
-    enabled: true
+defaults:
+  max_libraries_per_task: 2      # 一次最多挂两个库，防止又变成"全量注入"
+  fallback: [notes, system]      # 一个都没匹配上时退到这里
+  default_permission: L2         # 工具没写 permission 时的默认值（偏保守）
+  default_side_effect: reversible
+
+# 子代理只能看到自己负责的库（架构文档 §3.2 的绑定矩阵）
+profiles:
+  work: [calendar, mail, notes, task, research, system]
+  learning: [notes, research, task, system]
+  life: [calendar, task, life, notes, system]
+  default: [calendar, notes, task, system]
+
+libraries:
+  - id: calendar
+    name: 日程时间
+    description: 查改日程、排期、冲突检测、时间换算
+    triggers: [日程, 日历, 会议, 排期, 冲突, 改到, 挪到, 下周, 明天, 后天, 周五, 有空]
+    default_permission: L1
+    max_permission: L2
+    tools:
+      - name: calendar.list_events
+        handler: calendar_list_events
+        description: 查询一段时间内的日程，用于查冲突
+        side_effect: none
+        permission: L0
+      - name: calendar.create_event
+        handler: calendar_create_event
+        description: 新建日程。会占用别人的时间，需要确认
+        side_effect: reversible
+        permission: L2
+
+  - id: mail
+    name: 邮件消息
+    description: 读信、起草、归档、跟进
+    triggers: [邮件, 回信, 起草, 回复, 发给, 收件人, 抄送, 附件]
+    default_permission: L1
+    max_permission: L2          # 注意：发送是 L3 之外最危险的动作，本库封顶 L2
+    tools:
+      - name: mail.draft
+        handler: mail_draft
+        description: 起草邮件存成草稿，不会发出去
+        side_effect: reversible
+        permission: L1
+
+  - id: notes
+    name: 笔记知识
+    description: 记录、检索个人笔记与知识库条目
+    triggers: [记, 笔记, 记一下, 记录, 写下来, 备忘, 之前说, 上次]
+    default_permission: L1
+    max_permission: L2
+    tools:
+      - name: notes.create
+        handler: notes_create
+        description: 把一句话记进收件箱
+        side_effect: reversible
+        permission: L1
+      - name: notes.search
+        handler: notes_search
+        description: 在笔记里按关键词搜
+        side_effect: none
+        permission: L0
+
+  - id: task
+    name: 待办提醒
+    description: 建待办、设提醒、跟踪截止时间
+    triggers: [提醒, 待办, 任务, 记得, 别忘, 截止, 到期, 跟进]
+    default_permission: L1
+    max_permission: L1
+    tools:
+      - name: task.add
+        handler: task_add
+        description: 新增一条待办或提醒
+        side_effect: reversible
+        permission: L1
+
+  - id: research
+    name: 检索与文档
+    description: 联网检索、读文档、做摘要
+    triggers: [搜, 查一下, 资料, 论文, 文档, 总结, 摘要, 联网, pdf, 读一下]
+    default_permission: L0
+    max_permission: L1
+    tools:
+      - name: web.search
+        handler: web_search
+        description: 联网检索（当前为占位实现）
+        side_effect: none
+        permission: L0
+      - name: doc.summarize
+        handler: doc_summarize
+        description: 读一份文档出摘要（当前为占位实现）
+        side_effect: none
+        permission: L0
+
+  - id: life
+    name: 生活服务
+    description: 记账、支出、报销、采买
+    triggers: [记账, 花了, 支出, 报销, 预算, 买, 订, 付]
+    default_permission: L2
+    max_permission: L2          # 涉钱，封顶 L2：永远需要确认
+    tools:
+      - name: life.record_expense
+        handler: life_record_expense
+        description: 记一笔支出。涉及金额，必须先确认
+        side_effect: reversible
+        permission: L2
+
+  - id: system
+    name: 系统自省
+    description: 时间、版本、自身能力查询
+    triggers: [时间, 几点, 现在, 今天, 日期, 版本, 你能做什么]
+    default_permission: L0
+    max_permission: L0
+    tools:
+      - name: time.now
+        handler: time_now
+        description: 取当前时间。评测时必须用冻结时间替代
+        side_effect: none
+        permission: L0
+      - name: system.info
+        handler: system_info
+        description: 返回服务版本与工具库概况
+        side_effect: none
+        permission: L0

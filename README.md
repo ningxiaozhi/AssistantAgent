@@ -1,4 +1,4 @@
-# AssistantAgent
+﻿# AssistantAgent
 
 > 个人助理 Agent —— 学习 / 工作 / 生活，**一个入口，六层分工，五条铁律**。
 
@@ -18,13 +18,14 @@
 | 副作用补偿（幂等键） | ✅ 可用 | `app/core/cancel.py`、`app/agent/tools.py` |
 | 全链路 trace（含落库） | ✅ 可用 | `app/core/trace.py`、`app/db/trace_sink.py` |
 | 角色化模型路由 + 敏感强制本地 | ✅ 可用 | `app/agent/routing.py`、`config/models.yaml` |
+| **工具分层治理（profile → 库 → 工具）** | ✅ 可用 | `app/agent/toolbox.py`、`config/tools.yaml` |
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
 | **AgentScope 接入** | ⚠️ EXPERIMENTAL | `app/agent/factory.py` |
 | LLM Wiki 多库、pgvector VectorStore | 🚧 待实现 | 见路线图 |
 
 > 说明：AgentScope 2.x 的构造参数仍在演进，`AgentScopeRuntime` 里按你锁定的版本校准一遍再上生产。
-> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 38 条全绿。
+> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 62 条全绿。
 
 ---
 
@@ -111,6 +112,48 @@ export AGENT_BACKEND=agentscope    # Windows: $env:AGENT_BACKEND="agentscope"
 
 ---
 
+## 工具治理
+
+工具不是一张平铺表，而是 **profile → 库 → 工具** 三层。一次任务只挂选中的库里的工具，
+其余工具的 schema 根本不会进上下文。
+
+```yaml
+profiles:                       # 谁在用 → 能看哪些库
+  work:     [calendar, mail, notes, task, research, system]
+  learning: [notes, research, task, system]     # 学习教练看不到邮件库
+
+libraries:                      # 能力域，权限在库这一层封顶
+  - id: mail
+    triggers: [邮件, 回信, 起草, 发给]
+    max_permission: L2          # 本库封顶 L2
+    tools:
+      - name: mail.draft
+        handler: mail_draft
+        permission: L1          # 可以更保守，不能更激进
+```
+
+效果（本项目 7 库 11 工具）：
+
+```
+"把明天的产品评审挪到下午两点" → calendar        → 挂 2 个工具（不是 11 个）
+"给张总回一封邮件"            → mail            → 挂 1 个
+"嗯嗯"                       → notes, system   → 兜底 4 个
+```
+
+随时可以预览路由结果：
+
+```bash
+curl -G localhost:8000/api/tools/route --data-urlencode "q=明天的会挪到下午"
+# {"libraries":["calendar"],"tools":["calendar.list_events","calendar.create_event"],...}
+```
+
+三条硬规则：**工具不能突破所在库的权限上限**、**工具全局不能重名**、**handler 必须存在**——
+违反任何一条，启动直接失败。
+
+设计细节（为什么路由不调模型、库内超过 15 个工具该怎么办）见[架构说明 §11](docs/architecture.md)。
+
+---
+
 ## 目录
 
 ```
@@ -125,8 +168,9 @@ app/
 │   └── trace.py         # 全链路事件
 ├── agent/
 │   ├── routing.py       # 角色 → 模型，敏感强制本地，降级链
+│   ├── toolbox.py       # 工具分层治理：profile → 库 → 工具，路由与权限封顶
 │   ├── factory.py       # echo / agentscope 两种运行时
-│   └── tools.py         # 工具契约：副作用等级 + 幂等键 + 权限
+│   └── tools.py         # 工具实现与契约（副作用 / 幂等键 / 权限）
 └── db/
     ├── schema.sql       # Postgres 16 + pgvector
     ├── pool.py          # 连不上就降级，不阻塞启动
@@ -140,7 +184,7 @@ config/
 └── prompts/system.md    # 系统提示词，改行为不用改代码
 eval/                    # 离线评测：cases / fixtures / runner / score
 docs/                    # 架构说明、评测方案、架构图
-tests/                   # 38 条 unittest
+tests/                   # 62 条 unittest
 ```
 
 ---
@@ -175,8 +219,8 @@ tests/                   # 38 条 unittest
 python -m unittest discover -s tests -v
 ```
 
-38 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
-父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / HTTP 全链路。
+62 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
+父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / 工具库划分与路由 / 权限封顶 / HTTP 全链路。
 
 不需要数据库、不需要模型、不需要网络。
 

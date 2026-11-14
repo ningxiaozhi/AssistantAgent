@@ -127,6 +127,43 @@ async def get_trace(task_id: str, request: Request) -> dict[str, Any]:
     return {"task_id": task_id, "events": [dict(r) for r in rows]}
 
 
+@router.get("/api/tools", tags=["tools"])
+async def list_tools(request: Request) -> dict[str, Any]:
+    """工具库全景：有哪些库、每库几个工具、权限上限。"""
+    c = ctx(request)
+    if c.catalog is None:
+        return {"available": False, "note": "工具配置未加载"}
+    return {
+        "available": True,
+        "stats": c.catalog.stats(),
+        "libraries": c.catalog.summary(),
+        "profiles": c.catalog.profiles,
+    }
+
+
+@router.get("/api/tools/route", tags=["tools"])
+async def route_tools(
+    request: Request,
+    q: str,
+    profile: str | None = None,
+    libraries: str | None = None,
+) -> dict[str, Any]:
+    """预览工具路由：这句话会命中哪个库、挂哪些工具。
+
+    排查"它为什么没用那个工具"的第一步 —— 先确认那个工具压根没被挂上，
+    还是挂上了但模型没选。
+    """
+    c = ctx(request)
+    if c.tool_router is None:
+        raise HTTPException(503, "工具配置未加载")
+    explicit = [x.strip() for x in libraries.split(",") if x.strip()] if libraries else None
+    try:
+        selection = c.tool_router.route(q, profile=profile, explicit=explicit)
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return selection.model_dump()
+
+
 @router.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {
@@ -135,4 +172,6 @@ async def root() -> dict[str, str]:
         "health": "/health",
         "chat": "POST /api/chat",
         "cancel": "POST /api/tasks/{id}/cancel",
+        "tools": "GET /api/tools",
+        "route": "GET /api/tools/route?q=...",
     }
