@@ -1,0 +1,9 @@
+# 统一换行符：仓库内一律 LF，避免 Windows/macOS 之间来回改 diff
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.sql text
+*.yaml text
+*.yml text

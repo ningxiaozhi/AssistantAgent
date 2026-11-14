@@ -1,0 +1,35 @@
+# 冻结的记忆环境（2026-11-18）
+# 关键：故意留一条三个月前的旧偏好与一条新的冲突偏好，用来测「时间衰减 + 新覆盖旧」
+profile:
+  name: 我
+  tz: Asia/Shanghai
+  work_hours: 09:30-19:00
+
+facts:
+  - subject: 我
+    predicate: 饮食偏好
+    object: 喜欢吃辣
+    confidence: 0.9
+    valid_from: 2026-08-02
+    valid_to: null          # ← 从没被标记过期，最容易骗过检索
+    source: chat
+
+  - subject: 我
+    predicate: 饮食偏好
+    object: 最近胃不好，忌辣，偏好清淡
+    confidence: 0.95
+    valid_from: 2026-11-13
+    valid_to: null
+    source: chat
+
+  - subject: 张总
+    predicate: 角色
+    object: 客户方采购负责人
+    confidence: 0.9
+    valid_from: 2026-09-10
+
+  - subject: 我
+    predicate: 作息
+    object: 周二、周四晚上通常有空
+    confidence: 0.6
+    valid_from: 2026-10-01

@@ -1,0 +1,13 @@
+{
+  "calendar.list_events": { "side_effect": "none", "desc": "查询时间段内的日程" },
+  "calendar.create_event": { "side_effect": "reversible", "desc": "新建日程，可删除补偿" },
+  "calendar.update_event": { "side_effect": "reversible", "desc": "修改日程，可改回补偿" },
+  "calendar.delete_event": { "side_effect": "reversible", "desc": "删除日程，可从快照恢复" },
+  "mail.draft": { "side_effect": "reversible", "desc": "创建草稿，不影响任何人" },
+  "mail.send": { "side_effect": "external", "desc": "真正发出邮件——撤不回来" },
+  "mail.delete_draft": { "side_effect": "reversible", "desc": "删除草稿，补偿用" },
+  "notes.create": { "side_effect": "reversible", "desc": "写一条笔记" },
+  "reminder.create": { "side_effect": "reversible", "desc": "建一个提醒" },
+  "wiki.search": { "side_effect": "none", "desc": "检索 wiki 知识库" },
+  "pdf.summarize": { "side_effect": "none", "desc": "读 PDF 出摘要" }
+}

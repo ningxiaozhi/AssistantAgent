@@ -1,0 +1,70 @@
+# ============================================================
+# 角色 → 模型。改这里等于改"系统性格"，所以它进版本库、可 review。
+#
+# 命名约定： model: <provider>/<model-name>
+# 敏感任务会被路由层强制改写为 local/*（见 app/agent/routing.py）
+# ============================================================
+
+providers:
+  local:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+  ds:
+    type: deepseek
+    base_url: https://api.deepseek.com
+    api_key_ref: env:DEEPSEEK_API_KEY
+  qwen:
+    type: dashscope
+    api_key_ref: env:DASHSCOPE_API_KEY
+
+roles:
+  # 高频、简单、每条消息都过 → 用本地小模型，省一次出网也省一次钱
+  intent:
+    model: local/qwen2.5-7b-instruct
+    temperature: 0.0
+    max_tokens: 200
+
+  # 把"那个事"补全成可检索的 query，不需要强推理
+  rewrite:
+    model: local/qwen2.5-7b-instruct
+    temperature: 0.3
+    max_tokens: 300
+
+  # 唯一真正需要"想得深"的环节，这里省钱会连环出错
+  planner:
+    model: ds/deepseek-chat
+    temperature: 0.2
+    fallback: [qwen/qwen-max]
+    local_model: local/qwen2.5-32b-instruct
+
+  # 子代理：工作偏质量，生活偏隐私
+  subagent.learning:
+    model: ds/deepseek-chat
+    temperature: 0.4
+    local_model: local/qwen2.5-32b-instruct
+
+  subagent.work:
+    model: ds/deepseek-chat
+    temperature: 0.3
+    fallback: [qwen/qwen-max]
+    local_model: local/qwen2.5-32b-instruct
+
+  subagent.life:
+    model: local/qwen2.5-32b-instruct
+    temperature: 0.5
+
+  subagent.research:
+    model: qwen/qwen-max
+    temperature: 0.3
+    local_model: local/qwen2.5-32b-instruct
+
+  # 量大、容错高，失败可重试
+  summarize:
+    model: local/qwen2.5-7b-instruct
+    temperature: 0.2
+    max_tokens: 600
+
+  # 注意：embedding 换一次 = 全库重算，这是最不该动的一环
+  embed:
+    model: local/bge-m3
+    temperature: 0.0

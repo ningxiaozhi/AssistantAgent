@@ -1,0 +1,30 @@
+# ---- python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 环境与密钥 ----
+.env
+.env.local
+*.key
+*.pem
+
+# ---- 本地数据 ----
+data/
+*.sqlite
+*.db
+pgdata/
+
+# ---- 评测产物（保留 demo 作为示例）----
+eval/report/*
+!eval/report/demo/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
