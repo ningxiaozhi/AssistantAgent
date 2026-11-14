@@ -88,6 +88,29 @@ async def main() -> int:
         ver = await db.fetchval("select version()")
         return ver.split(",")[0]
 
+    # 连接后先做权限体检：没有 CREATE 权限的话，下面每一步都会以
+    # "permission denied" 收场，而那句话不告诉你该找谁要权限。
+    who = await db.fetchrow(
+        """
+        select current_user as usr,
+               (select rolsuper from pg_roles where rolname = current_user) as is_super,
+               pg_get_userbyid((select datdba from pg_database where datname = current_database())) as owner,
+               has_database_privilege(current_user, current_database(), 'CREATE') as can_create
+        """
+    )
+    if not who["can_create"]:
+        print(f"\n{BAD} 当前用户 {who['usr']} 对库 {_dsn().rsplit('/', 1)[-1]} 没有 CREATE 权限")
+        print(f"   库属主是 {who['owner']}，超管={who['is_super']} → 建不了 app schema，也装不了扩展。")
+        print("\n   用超级用户执行下面这句（二选一）：")
+        print(f"     GRANT CREATE ON DATABASE {_dsn().rsplit('/', 1)[-1]} TO {who['usr']};")
+        print(f"     ALTER DATABASE {_dsn().rsplit('/', 1)[-1]} OWNER TO {who['usr']};")
+        print("   容器里执行：")
+        print(f"     docker exec -i <容器> psql -U postgres -d <库> < deploy/init-grants.sql")
+        await db.close()
+        return 1
+    print(f"   用户 {who['usr']}（库属主 {who['owner']}，超管 {who['is_super']}）")
+
+
     @step("② 应用 schema")
     async def _schema():
         nonlocal vector_ok

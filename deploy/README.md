@@ -95,6 +95,30 @@ wiki_store = PostgresWikiStore(db) if db.available else LocalWikiStore(...)
 
 ---
 
+## 排错：`permission denied for database` / `must be owner of table`
+
+应用用户不是**库属主**时，会出现两连击：
+
+1. `permission denied for database` —— 连 `app` schema 都建不了
+2. 早期用别的用户建过表，新用户**能看见表名但改不了** —— `must be owner of table`
+
+第二个尤其容易误判：`information_schema` 会按权限过滤，所以你可能看到"没有表"，
+实际上是"有表但你没权限看"。
+
+一条命令根治（用超级用户跑一次，只转移 `app` schema 内对象的所有权，不动数据）：
+
+```bash
+docker exec -i <容器> psql -U postgres -d assistant < deploy/init-grants.sql
+# 记得把文件开头的 dbuser 改成你的应用用户名
+```
+
+脚本做四件事：装 pgvector → 给库级 CREATE → **把 app schema 及内部表/序列属主转给应用用户**
+→ 再验证一遍权限。
+
+跑完重跑 `python scripts/check_pg.py`，第 ① 步输出里会显示 `can_create` 是否已变成 True。
+
+---
+
 ## 排错：`extension "vector" is not available`
 
 这条报错 100% 说明**跑的是纯 postgres 镜像，不是 pgvector 镜像**。

@@ -22,7 +22,7 @@
 | **记忆：LLM Wiki 多知识库** | ✅ 可用（文件存储） | `app/memory/`、`config/memory.yaml` |
 | **HITL 确认闸门** | ✅ 可用 | `app/core/confirm.py` |
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
-| Postgres 存储（wiki / 向量） | 🚧 代码就绪，需在真库验证 | `scripts/check_pg.py` |
+| Postgres 存储（wiki / 向量） | ✅ 已在真库验证 | `scripts/check_pg.py` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
 | **AgentScope 接入** | ✅ 已对 2.0.11 校准 | [接入指南](docs/integration-agentscope.md) |
 
@@ -332,7 +332,7 @@ cat eval/report/demo/report.md
 - [x] **HITL 全链路**：`waiting_confirm` → 确认/拒绝接口 → 审计
 - [ ] **SSE 事件流**：替代轮询，断线可补历史
 - [ ] **AgentScope 接入校准**：跑 `scripts/check_agentscope.py` 后对齐三个校准点
-- [ ] **Postgres 路径验证**：跑 `scripts/check_pg.py`（需要一台能连到的 pgvector）
+- [x] **Postgres 路径验证**：`scripts/check_pg.py` 7 步全过（任务/权限/wiki/pgvector）
 - [ ] **权限规则固化**：用户同意过的动作变成 allow 规则，减少重复打扰
 - [ ] **影子模式**：写工具 dry-run，只记录不执行
 
