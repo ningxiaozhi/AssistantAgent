@@ -1,4 +1,4 @@
-﻿"""配置加载：`config/` 目录是唯一来源。
+"""配置加载：`config/` 目录是唯一来源。
 
 三层，各管各的：
     1. `config/app.yaml`  非敏感配置的唯一真相（进版本库，可 review、可 diff）
@@ -60,6 +60,11 @@ class LimitsConfig(_Strict):
     max_usd_per_task: float = 0.15
 
 
+class HitlConfig(_Strict):
+    timeout_s: float = 300.0
+    demo_in_echo: bool = True
+
+
 class PathsConfig(_Strict):
     models: str = "models.yaml"
     tools: str = "tools.yaml"
@@ -72,6 +77,7 @@ class AppConfig(_Strict):
     database: DatabaseConfig
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    hitl: HitlConfig = Field(default_factory=HitlConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     config_dir: Path = DEFAULT_CONFIG_DIR
 

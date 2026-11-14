@@ -1,4 +1,4 @@
-"""FastAPI 入口。
+﻿"""FastAPI 入口。
 
 启动顺序刻意做成"任何一环挂掉都不影响服务起来"：
   数据库连不上 → 内存模式；模型配置坏了 → echo 模式。
@@ -22,6 +22,7 @@ from app.agent.toolbox import ToolCatalog, ToolRouter
 from app.api.routes import router as api_router
 from app.config import ROOT, AppConfig, ConfigError
 from app.core.cancel import TaskRegistry
+from app.core.confirm import PermissionGate, recover_stale_tasks
 from app.core.runner import TaskRunner
 from app.db.pool import Database
 from app.db.repo import InMemoryTaskRepo, PostgresTaskRepo
@@ -47,6 +48,7 @@ class AppContext:
     memory: MemoryRouter | None = None
     memory_writer: MemoryWriter | None = None
     wiki_store: Any = None
+    gate: PermissionGate | None = None
 
 
 class _NullRouter:
@@ -70,6 +72,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         db = Database(cfg.database.dsn, cfg.database.pool_min, cfg.database.pool_max)
         await db.connect(timeout=cfg.database.connect_timeout_s)
         repo = PostgresTaskRepo(db) if db.available else InMemoryTaskRepo()
+
+        # 上次进程留下的 running / waiting_confirm 不会有协程在跑，标成 interrupted
+        try:
+            await recover_stale_tasks(repo)
+        except Exception as e:
+            log.warning("遗留任务清理失败: %s", e)
+
+        gate = PermissionGate(repo, cfg.hitl.timeout_s)
 
         try:
             router = ModelRouter(cfg.models_path, cfg.runtime.force_local_on_sensitive)
@@ -105,7 +115,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except Exception as e:
             log.error("记忆配置加载失败（%s），本次运行不挂载记忆", e)
 
-        runtime = build_runtime(cfg, router, catalog, memory_router)  # type: ignore[arg-type]
+        runtime = build_runtime(
+            cfg,
+            router,  # type: ignore[arg-type]
+            catalog,
+            memory_router,
+            gate,
+            cfg.hitl.demo_in_echo,
+        )
         sink = PostgresTraceSink(db) if db.available else None
         runner = TaskRunner(repo, TaskRegistry(), runtime, cfg, sink)
 
@@ -123,6 +140,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             memory=memory_router,
             memory_writer=memory_writer,
             wiki_store=wiki_store,
+            gate=gate,
         )
         log.info(
             "启动完成 | config=%s | db=%s | agent=%s | roles=%d | tools=%s | memory=%s",

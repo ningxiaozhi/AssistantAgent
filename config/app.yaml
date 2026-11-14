@@ -31,6 +31,10 @@ limits:
   max_tokens: 120000         # 单任务 token 上限
   max_usd_per_task: 0.15     # 单任务金额上限
 
+hitl:
+  timeout_s: 300             # 等确认最多 5 分钟，超时按取消处理
+  demo_in_echo: true         # echo 模式用演练规则触发确认；接真 Agent 后关掉
+
 # 相对 config/ 目录的路径
 paths:
   models: models.yaml

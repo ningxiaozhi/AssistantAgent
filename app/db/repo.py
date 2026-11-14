@@ -49,6 +49,7 @@ class InMemoryTaskRepo:
     def __init__(self) -> None:
         self.tasks: dict[str, dict[str, Any]] = {}
         self.tool_calls: list[dict[str, Any]] = []
+        self.permissions: list[dict[str, Any]] = []
 
     async def create(
         self,
@@ -123,6 +124,23 @@ class InMemoryTaskRepo:
 
     async def record_tool_call(self, task_id: str, **fields: Any) -> None:
         self.tool_calls.append({"task_id": task_id, **fields})
+
+    async def record_permission(
+        self, task_id: str, tool: str, decision: str, rule: str | None = None
+    ) -> None:
+        self.permissions.append(
+            {
+                "task_id": task_id,
+                "tool": tool,
+                "decision": decision,
+                "rule": rule,
+                "decided_by": "policy" if rule in ("timeout", "cancel") else "user",
+            }
+        )
+
+    async def list_active(self) -> list[dict[str, Any]]:
+        active = {"running", "waiting_confirm", "cancelling"}
+        return [dict(r) for r in self.tasks.values() if r["state"] in active]
 
 
 class PostgresTaskRepo:
@@ -225,3 +243,24 @@ class PostgresTaskRepo:
             fields.get("idempotency_key"),
             fields.get("latency_ms"),
         )
+
+    async def record_permission(
+        self, task_id: str, tool: str, decision: str, rule: str | None = None
+    ) -> None:
+        await self.db.execute(
+            """
+            INSERT INTO app.permission_event (task_id, tool, decision, rule, decided_by)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            uuid.UUID(task_id),
+            tool,
+            decision,
+            rule,
+            "policy" if rule in ("timeout", "cancel") else "user",
+        )
+
+    async def list_active(self) -> list[dict[str, Any]]:
+        rows = await self.db.fetch(
+            "SELECT * FROM app.task WHERE state IN ('running', 'waiting_confirm', 'cancelling')"
+        )
+        return [dict(r) for r in rows]

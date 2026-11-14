@@ -1,4 +1,4 @@
-# AssistantAgent
+﻿# AssistantAgent
 
 > 个人助理 Agent —— 学习 / 工作 / 生活，**一个入口，六层分工，五条铁律**。
 
@@ -20,6 +20,7 @@
 | 角色化模型路由 + 敏感强制本地 | ✅ 可用 | `app/agent/routing.py`、`config/models.yaml` |
 | **工具分层治理（profile → 库 → 工具）** | ✅ 可用 | `app/agent/toolbox.py`、`config/tools.yaml` |
 | **记忆：LLM Wiki 多知识库** | ✅ 可用（文件存储） | `app/memory/`、`config/memory.yaml` |
+| **HITL 确认闸门** | ✅ 可用 | `app/core/confirm.py` |
 | pgvector 向量索引 | 🚧 接口就绪，未在真库验证 | `app/memory/vector.py` |
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
@@ -27,7 +28,7 @@
 | LLM Wiki 多库、pgvector VectorStore | 🚧 待实现 | 见路线图 |
 
 > 说明：AgentScope 2.x 的构造参数仍在演进，`AgentScopeRuntime` 里按你锁定的版本校准一遍再上生产。
-> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 84 条全绿。
+> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 97 条全绿。
 
 ---
 
@@ -195,6 +196,36 @@ curl -X POST localhost:8000/api/memory/pages \
 
 ---
 
+## 确认闸门（HITL）
+
+L2 动作（发邮件、改日程、记账）在执行前会停下来等你点头。
+
+```bash
+# 1) 提一个会动手的请求
+curl -X POST localhost:8000/api/chat -H "Content-Type: application/json" \
+     -d '{"message":"记账：38 块打车"}'
+# → 任务进入 waiting_confirm
+
+# 2) 看看它在等什么（前端就渲染这个）
+curl localhost:8000/api/confirmations
+# {"count":1,"pending":[{"tool":"life.record_expense","permission":"L2","expires_in_s":299.4,...}]}
+
+# 3) 答复
+curl -X POST localhost:8000/api/tasks/<id>/confirm -H "Content-Type: application/json" \
+     -d '{"approved":true}'
+# {"message":"已同意，任务继续执行"}   → 任务从 waiting_confirm 回到 running
+```
+
+三个不显然的决定：
+
+1. **暂停用进程内 future**。进程重启会丢，所以启动时把遗留的 `running` / `waiting_confirm`
+   标成 `interrupted`，而不是假装它还在跑——一个骗人的 `running` 比一个诚实的 `interrupted` 危险得多。
+2. **等待期间同时盯"答复"和"取消"**。少盯一个就出僵尸：点了取消，任务还在等你确认。
+3. **超时按取消处理**（默认 300s），并落一条 `permission_event` 审计。
+   "它到底问没问过我"是能查的。
+
+---
+
 ## 目录
 
 ```
@@ -205,6 +236,7 @@ app/
 ├── core/
 │   ├── tasks.py         # 状态机：穷举所有合法迁移
 │   ├── cancel.py        # 取消三通道 + 四个安全点 + 补偿
+│   ├── confirm.py       # HITL 确认闸门：暂停、超时、取消竞速、重启清场
 │   ├── runner.py        # 中枢：提交 → 执行 → 取消 → 落状态
 │   └── trace.py         # 全链路事件
 ├── memory/
@@ -230,7 +262,7 @@ config/
 └── prompts/system.md    # 系统提示词，改行为不用改代码
 eval/                    # 离线评测：cases / fixtures / runner / score
 docs/                    # 架构说明、评测方案、架构图
-tests/                   # 84 条 unittest
+tests/                   # 97 条 unittest
 ```
 
 ---
@@ -265,8 +297,8 @@ tests/                   # 84 条 unittest
 python -m unittest discover -s tests -v
 ```
 
-84 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
-父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / 工具库划分与路由 / 权限封顶 / 页面模型与索引 / 记忆检索与写入合并 / HTTP 全链路。
+97 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
+父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / 工具库划分与路由 / 权限封顶 / 页面模型与索引 / 记忆检索与写入合并 / 确认闸门（同意·拒绝·超时·取消竞速·重启清场）/ HTTP 全链路。
 
 不需要数据库、不需要模型、不需要网络。
 

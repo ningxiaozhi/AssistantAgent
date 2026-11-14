@@ -354,6 +354,35 @@ async def run_task(task_id: str):
 
 ---
 
+### 5.7 确认闸门的"暂停与恢复"
+
+L2 动作要停下来问一句，但**暂停之后怎么继续**才是真问题。三种实现：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **① 进程内 future** | 任务协程 `await` 一个 future，用户答复后 `set_result` | 进程重启就丢 |
+| ② 断点持久化 | 状态存下来，重启后从断点重放 | 需要 AgentScope 的 `AgentState` 快照配合，复杂度高一个量级 |
+| ③ 不暂停 | 先执行再告知 | 不叫确认，叫通知 |
+
+本项目实现 ①，并把代价**显式化**：
+
+- 启动时扫一遍 `running` / `waiting_confirm` / `cancelling`，分别标成
+  `interrupted` / `interrupted` / `cancelled`。**不假装它还在跑**——否则任务会永远卡在"运行中"，
+  而实际上没有任何协程在推进它。
+- `interrupted` 是显式的"我知道它断了"，比一个骗人的 `running` 诚实。
+
+等待期间必须**同时盯两件事**：用户答复、任务被取消。少盯一个就出僵尸——
+"点了取消，任务还在等你确认"。
+
+```python
+done, _ = await asyncio.wait({reply_future, cancel_waiter}, return_when=FIRST_COMPLETED)
+```
+
+超时（默认 300s）按取消处理，并记一条 `permission_event(decision=denied, rule=timeout)`。
+每一次询问、同意、拒绝、超时、取消都会落审计表——"它到底问没问过我"是能查的。
+
+---
+
 ## 6. 全链路日志：出事能复盘
 
 ### 6.1 Trace 模型

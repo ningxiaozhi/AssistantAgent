@@ -61,6 +61,30 @@ def main() -> int:
         print(f"⑦ chat        : state={task['state']} steps={task['steps']}")
         print("   " + (task.get("output") or "").replace("\n", "\n   "))
 
+        # ⑧ HITL：写动作会停下来问，确认后继续
+        hitl_id = client.post("/api/chat", json={"message": "记账：38 块打车"}).json()["task_id"]
+        parked = {}
+        for _ in range(60):
+            parked = client.get(f"/api/tasks/{hitl_id}").json()
+            if parked["state"] in ("waiting_confirm", "succeeded", "failed", "cancelled"):
+                break
+            time.sleep(0.05)
+        pending = client.get("/api/confirmations").json()
+        tool = (parked.get("pending") or {}).get("tool")
+        print(f"⑧ hitl        : state={parked['state']} pending={pending['count']} tool={tool}")
+
+        if parked["state"] == "waiting_confirm":
+            msg = client.post(f"/api/tasks/{hitl_id}/confirm", json={"approved": True}).json()["message"]
+            print(f"   confirm    : {msg}")
+            for _ in range(80):
+                final = client.get(f"/api/tasks/{hitl_id}").json()
+                if final["state"] in ("succeeded", "failed", "cancelled"):
+                    break
+                time.sleep(0.05)
+            print(f"   result     : state={final['state']}")
+        else:
+            print("   ⚠️ 期望停在 waiting_confirm，实际没有 —— 检查 hitl.demo_in_echo")
+
     print("\n✅ 冒烟通过")
     return 0
 

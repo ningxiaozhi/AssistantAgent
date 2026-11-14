@@ -13,6 +13,7 @@ from typing import Any
 
 from app.config import AppConfig
 from app.core.cancel import TaskCancelled, TaskRegistry, TaskScope
+from app.core.confirm import ConfirmationExpired, ConfirmationRejected
 from app.core.tasks import (
     TaskState,
     is_cancellable,
@@ -95,6 +96,16 @@ class TaskRunner:
             log.info("任务 %s 在 %s 被取消", task_id, e.where)
             await scope.compensate()
             await trace.record("task.cancelled", where=e.where, reason=e.reason)
+            await self._finish_cancelled(task_id, str(e))
+
+        except ConfirmationRejected as e:
+            log.info("任务 %s 被用户拒绝：%s", task_id, e.tool)
+            await trace.record("task.rejected", tool=e.tool)
+            await self._finish_cancelled(task_id, str(e))
+
+        except ConfirmationExpired as e:
+            log.info("任务 %s 确认超时：%s", task_id, e.tool)
+            await trace.record("task.confirm_timeout", tool=e.tool)
             await self._finish_cancelled(task_id, str(e))
 
         except Exception as e:  # 任何异常都要落状态，不能留 running 僵尸

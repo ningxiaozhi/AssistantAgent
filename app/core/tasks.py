@@ -42,7 +42,13 @@ ALLOWED: dict[TaskState, frozenset[TaskState]] = {
         }
     ),
     TaskState.WAITING_CONFIRM: frozenset(
-        {TaskState.RUNNING, TaskState.CANCELLING, TaskState.CANCELLED, TaskState.FAILED}
+        {
+            TaskState.RUNNING,
+            TaskState.CANCELLING,
+            TaskState.CANCELLED,
+            TaskState.FAILED,
+            TaskState.INTERRUPTED,  # 进程重启时，等人确认的任务只能算中断
+        }
     ),
     TaskState.CANCELLING: frozenset({TaskState.CANCELLED}),
     TaskState.INTERRUPTED: frozenset({TaskState.RUNNING, TaskState.CANCELLED, TaskState.FAILED}),

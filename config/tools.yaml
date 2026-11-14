@@ -113,7 +113,7 @@ libraries:
   - id: life
     name: 生活服务
     description: 记账、支出、报销、采买
-    triggers: [记账, 花了, 支出, 报销, 预算, 买, 订, 付]
+    triggers: [记账, 记一笔, 花了, 支出, 报销, 预算, 买, 订, 付, 打车, 消费]
     default_permission: L2
     max_permission: L2          # 涉钱，封顶 L2：永远需要确认
     tools:

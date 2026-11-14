@@ -1,4 +1,4 @@
-﻿"""Agent 运行时：一个接口，两个实现。
+"""Agent 运行时：一个接口，两个实现。
 
 echo       —— 不需要任何模型就能跑通「状态机 → 安全点 → trace → 取消」整条链路
 agentscope —— 真实 Agent（需自行校准 API 版本，见下方注释）
@@ -20,9 +20,13 @@ from app.agent.routing import ModelRouter
 from app.agent.toolbox import ToolCatalog, ToolRouter, ToolSelection
 from app.config import AppConfig
 from app.core.cancel import TaskScope
+from app.core.confirm import ConfirmationRequest
 from app.core.trace import Trace
 
 log = logging.getLogger(__name__)
+
+# 演练用：出现这些词才认为"这是要动手，不是要查"
+WRITE_HINTS = ("记一笔", "记账", "花了", "删", "发送", "发给", "新建", "创建", "改到", "订")
 
 FALLBACK_SYSTEM_PROMPT = """你是用户的个人助理，负责学习、工作、生活三方面的事务。
 规则：
@@ -58,12 +62,16 @@ class EchoRuntime:
         catalog: ToolCatalog | None = None,
         tool_router: ToolRouter | None = None,
         memory_router: Any = None,
+        gate: Any = None,
+        demo_confirm: bool = False,
     ) -> None:
         self.steps = steps
         self.delay = delay
         self.catalog = catalog
         self.tool_router = tool_router
         self.memory_router = memory_router
+        self.gate = gate
+        self.demo_confirm = demo_confirm
 
     async def run(
         self,
@@ -77,6 +85,7 @@ class EchoRuntime:
         selection = self._select(user_input, trace)
         await self._record_selection(selection, trace)
         memory = await self._select_memory(user_input, trace)
+        await self._maybe_confirm(task_id, user_input, selection, scope, trace)
 
         plan = ["理解意图", "装配上下文", "生成回答"][: self.steps]
         for i, label in enumerate(plan, 1):
@@ -130,6 +139,42 @@ class EchoRuntime:
             reason=selection.reason,
         )
         return selection
+
+    async def _maybe_confirm(
+        self,
+        task_id: str,
+        text: str,
+        selection: ToolSelection | None,
+        scope: TaskScope,
+        trace: Trace,
+    ) -> None:
+        """演练规则：命中的库里存在 L2 工具 + 输入含写动作 → 走一次真实确认闸门。
+
+        接真 Agent 后这段会被模型自己的工具调用取代，闸门本身不用改。
+        """
+        if not self.demo_confirm or self.gate is None or self.catalog is None:
+            return
+        if selection is None or not any(h in text for h in WRITE_HINTS):
+            return
+        registry = self.catalog.resolve(selection)
+        target = next((t for t in registry if t.permission == "L2"), None)
+        if target is None:
+            return
+
+        trace.next_step()
+        await trace.record("confirm.ask", tool=target.name)
+        await self.gate.ask(
+            task_id,
+            ConfirmationRequest(
+                tool=target.name,
+                args={"input": text},
+                permission=target.permission,
+                reason=f"{target.description}",
+                preview=f"将执行 {target.name}：{text}",
+            ),
+            scope,
+        )
+        await trace.record("confirm.approved", tool=target.name)
 
 
 class AgentScopeRuntime:
@@ -273,13 +318,24 @@ def build_runtime(
     router: ModelRouter,
     catalog: ToolCatalog | None = None,
     memory_router: Any = None,
+    gate: Any = None,
+    demo_confirm: bool = False,
 ) -> Runtime:
     backend = config.runtime.agent_backend.lower()
     has_agentscope = importlib.util.find_spec("agentscope") is not None
     tool_router = ToolRouter(catalog) if catalog else None
 
+    def echo() -> EchoRuntime:
+        return EchoRuntime(
+            catalog=catalog,
+            tool_router=tool_router,
+            memory_router=memory_router,
+            gate=gate,
+            demo_confirm=demo_confirm,
+        )
+
     if backend == "echo":
-        return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)
+        return echo()
     if backend == "agentscope":
         if not has_agentscope:
             raise RuntimeError("agent_backend=agentscope 但未安装：pip install 'agentscope>=2.0'")
@@ -290,6 +346,6 @@ def build_runtime(
             return AgentScopeRuntime(router, config, catalog, memory_router)
         except Exception as e:  # 配错模型也别让服务起不来
             log.warning("AgentScope 初始化失败(%s)，降级 echo", e)
-            return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)
+            return echo()
     log.info("未安装 agentscope，使用 echo 模式（状态机/取消/trace 全部可用）")
-    return EchoRuntime(catalog=catalog, tool_router=tool_router, memory_router=memory_router)
+    return echo()

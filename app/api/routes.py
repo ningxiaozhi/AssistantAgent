@@ -65,6 +65,7 @@ async def health(request: Request) -> dict[str, Any]:
         "agent": c.runtime.name,
         "roles": c.router.all_roles(),
         "running_tasks": len(c.runner.running),
+        "pending_confirmations": c.gate.count() if c.gate else 0,
     }
 
 
@@ -92,10 +93,49 @@ async def list_tasks(request: Request, limit: int = 20) -> list[dict[str, Any]]:
 
 @router.get("/api/tasks/{task_id}", tags=["tasks"])
 async def get_task(task_id: str, request: Request) -> dict[str, Any]:
-    task = await ctx(request).repo.get(task_id)
+    c = ctx(request)
+    task = await c.repo.get(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
+    # 等待确认时，把待确认的动作用一并带出来，前端才能渲染预览
+    if c.gate is not None and task.get("state") == "waiting_confirm":
+        pending = c.gate.get(task_id)
+        if pending is not None:
+            task = {**task, "pending": pending.to_dict()}
     return task
+
+
+class ConfirmRequest(BaseModel):
+    approved: bool
+    note: str | None = None
+
+
+@router.get("/api/confirmations", tags=["hitl"])
+async def list_confirmations(request: Request) -> dict[str, Any]:
+    """所有在等人点头的动作。前端拿这个渲染"待办提醒"。"""
+    c = ctx(request)
+    if c.gate is None:
+        return {"pending": [], "count": 0}
+    return {"pending": c.gate.pending(), "count": c.gate.count()}
+
+
+@router.post("/api/tasks/{task_id}/confirm", tags=["hitl"])
+async def confirm_task(task_id: str, body: ConfirmRequest, request: Request) -> dict[str, Any]:
+    """答复一个等待中的动作。
+
+    注意这是"答复"，不是"执行"——任务协程还在等，答复后它自己继续。
+    409 表示没有可答复的请求（已超时 / 已取消 / 已处理过）。
+    """
+    c = ctx(request)
+    if c.gate is None:
+        raise HTTPException(503, "确认闸门未启用")
+    if not c.gate.resolve(task_id, body.approved):
+        raise HTTPException(409, "没有等待中的确认（可能已超时、已取消或已处理）")
+    return {
+        "task_id": task_id,
+        "approved": body.approved,
+        "message": "已同意，任务继续执行" if body.approved else "已拒绝，任务将终止",
+    }
 
 
 @router.post("/api/tasks/{task_id}/cancel", tags=["tasks"])
