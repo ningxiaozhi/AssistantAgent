@@ -1,9 +1,9 @@
-"""取消机制测试：安全点、补偿、级联、真实任务中途取消。"""
+﻿"""取消机制测试：安全点、补偿、级联、真实任务中途取消。"""
 import asyncio
 import unittest
 
 from app.agent.factory import EchoRuntime
-from app.config import Settings
+from app.config import AppConfig
 from app.core.cancel import SAFE_POINTS, TaskCancelled, TaskRegistry, TaskScope, task_scope
 from app.core.runner import TaskConflict, TaskRunner
 from app.db.repo import InMemoryTaskRepo
@@ -94,14 +94,17 @@ class TestCascade(unittest.TestCase):
 
 
 class TestRealCancellation(unittest.TestCase):
-    def _settings(self):
-        return Settings(database_url="postgresql://127.0.0.1:1/none", agent_backend="echo")
+    def _config(self):
+        cfg = AppConfig.load()
+        cfg.database.dsn = "postgresql://127.0.0.1:1/none"
+        cfg.runtime.agent_backend = "echo"
+        return cfg
 
     def test_cancel_running_task_lands_in_cancelled(self):
         async def scenario():
             repo = InMemoryTaskRepo()
             runner = TaskRunner(
-                repo, TaskRegistry(), EchoRuntime(delay=0.2), self._settings()
+                repo, TaskRegistry(), EchoRuntime(delay=0.2), self._config()
             )
             row = await runner.submit(user_input="帮我把这 20 篇论文整理成综述")
             await asyncio.sleep(0.1)
@@ -121,7 +124,7 @@ class TestRealCancellation(unittest.TestCase):
     def test_cancel_finished_task_conflicts(self):
         async def scenario():
             repo = InMemoryTaskRepo()
-            runner = TaskRunner(repo, TaskRegistry(), EchoRuntime(delay=0.01), self._settings())
+            runner = TaskRunner(repo, TaskRegistry(), EchoRuntime(delay=0.01), self._config())
             row = await runner.submit(user_input="短任务")
             for _ in range(60):
                 task = await repo.get(row["id"])
@@ -136,7 +139,7 @@ class TestRealCancellation(unittest.TestCase):
     def test_cancel_unknown_task(self):
         async def scenario():
             runner = TaskRunner(
-                InMemoryTaskRepo(), TaskRegistry(), EchoRuntime(), self._settings()
+                InMemoryTaskRepo(), TaskRegistry(), EchoRuntime(), self._config()
             )
             with self.assertRaises(KeyError):
                 await runner.cancel("not-exists")

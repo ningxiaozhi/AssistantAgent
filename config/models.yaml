@@ -8,6 +8,7 @@
 providers:
   local:
     type: ollama
+    # 在容器里跑时改成 http://host.docker.internal:11434
     base_url: http://127.0.0.1:11434
   ds:
     type: deepseek

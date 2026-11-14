@@ -24,7 +24,7 @@
 | LLM Wiki 多库、pgvector VectorStore | 🚧 待实现 | 见路线图 |
 
 > 说明：AgentScope 2.x 的构造参数仍在演进，`AgentScopeRuntime` 里按你锁定的版本校准一遍再上生产。
-> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 31 条全绿。
+> 除此之外的代码都有测试覆盖，`python -m unittest discover -s tests` 38 条全绿。
 
 ---
 
@@ -83,12 +83,40 @@ export AGENT_BACKEND=agentscope    # Windows: $env:AGENT_BACKEND="agentscope"
 
 ---
 
+## 配置
+
+**一处改，全项目生效。代码里没有硬编码的地址、预算和提示词。**
+
+| 文件 | 管什么 |
+|---|---|
+| `config/app.yaml` | 端口、日志级别、数据库 DSN 与连接池、运行时后端、预算上限、子配置路径 |
+| `config/models.yaml` | 角色 → 模型、降级链、敏感任务强制本地 |
+| `config/tools.yaml` | 工具注册表：装哪些、副作用等级、权限等级、开不开 |
+| `config/prompts/system.md` | 系统提示词，改行为不用改代码 |
+| `.env` | **只有密钥**（API Key）和容器覆盖项，不进版本库 |
+
+只有这 5 项允许被环境变量覆盖（`app/config.py: ENV_OVERRIDES`），其余一律以文件为准：
+
+| 变量 | 覆盖 `app.yaml` 的 |
+|---|---|
+| `DATABASE_URL` | `database.dsn`（容器里用） |
+| `AGENT_BACKEND` | `runtime.agent_backend` |
+| `HOST` / `PORT` | `server.host` / `server.port` |
+| `LOG_LEVEL` | `server.log_level` |
+
+两个刻意的设计：
+
+- **拼错字段名直接启动失败**（pydantic `extra="forbid"`）。宁可起不来，也别带着错配置静默运行——这类 bug 最难查。
+- **密钥永远不进配置文件**。`models.yaml` 里只写 `api_key_ref: env:DEEPSEEK_API_KEY`，真值只存在于环境变量。
+
+---
+
 ## 目录
 
 ```
 app/
 ├── main.py              # 入口：任何一环挂掉都能起（DB 挂→内存，模型坏→echo）
-├── config.py            # 环境变量 / .env
+├── config.py            # 配置加载：config/ 目录是唯一真相
 ├── api/routes.py        # /health /api/chat /api/tasks/{id} [/cancel|/trace]
 ├── core/
 │   ├── tasks.py         # 状态机：穷举所有合法迁移
@@ -105,10 +133,14 @@ app/
     ├── repo.py          # 内存 / Postgres 两套实现，乐观锁
     └── trace_sink.py    # trace 落库（失败不拖垮主流程）
 
-config/models.yaml       # 角色 → 模型（进版本库、可 review）
+config/
+├── app.yaml             # 服务 / 数据库 / 运行时 / 预算 / 路径
+├── models.yaml          # 角色 → 模型（进版本库、可 review）
+├── tools.yaml           # 工具注册表：装哪些、什么权限、开不开
+└── prompts/system.md    # 系统提示词，改行为不用改代码
 eval/                    # 离线评测：cases / fixtures / runner / score
 docs/                    # 架构说明、评测方案、架构图
-tests/                   # 31 条 unittest
+tests/                   # 38 条 unittest
 ```
 
 ---
@@ -143,8 +175,8 @@ tests/                   # 31 条 unittest
 python -m unittest discover -s tests -v
 ```
 
-31 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
-父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / HTTP 全链路。
+38 条，覆盖：状态机穷举 / 非法迁移 / 四个安全点 / 补偿逆序 / 失败补偿留证 /
+父子级联取消 / 真实任务中途取消 / 取消已结束任务返回冲突 / 路由敏感降级 / 配置加载与校验 / HTTP 全链路。
 
 不需要数据库、不需要模型、不需要网络。
 

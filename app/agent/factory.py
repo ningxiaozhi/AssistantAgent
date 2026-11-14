@@ -5,6 +5,8 @@ agentscope —— 真实 Agent（需自行校准 API 版本，见下方注释）
 
 为什么保留 echo：骨架的第一要求是 `git clone && uvicorn` 就能跑。
 没有模型的机器上也应该能点开 /docs 试一遍取消流程。
+
+系统提示、工具表都来自 config/，改行为不用改代码。
 """
 from __future__ import annotations
 
@@ -14,14 +16,14 @@ import logging
 from typing import Any, Protocol
 
 from app.agent.routing import ModelRouter
-from app.agent.tools import ToolRegistry, default_registry
-from app.config import Settings
+from app.agent.tools import ToolRegistry, load_registry
+from app.config import AppConfig
 from app.core.cancel import TaskScope
 from app.core.trace import Trace
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """你是用户的个人助理，负责学习、工作、生活三方面的事务。
+FALLBACK_SYSTEM_PROMPT = """你是用户的个人助理，负责学习、工作、生活三方面的事务。
 规则：
 1. 涉及对外发送、花钱、改日程、删文件的操作，先给预览再等确认
 2. 回答前先看有没有相关记忆，不要凭空编造
@@ -83,17 +85,18 @@ class AgentScopeRuntime:
       1. router.resolve(role) → ModelSpec → 对应 provider 的 ChatModel
       2. Agent(name=..., system_prompt=..., model=...) 组装
       3. 每个安全点插 scope.checkpoint()
-      4. 工具通过 ToolRegistry 暴露成 Toolkit，副作用走工具契约
+      4. 工具从 config/tools.yaml 装配（副作用走工具契约）
       5. 回复里的 token/cost 写进 trace，供成本看板与门禁使用
     """
 
     name = "agentscope"
 
-    def __init__(self, router: ModelRouter, settings: Settings, role: str = "planner") -> None:
+    def __init__(self, router: ModelRouter, config: AppConfig, role: str | None = None) -> None:
         self.router = router
-        self.settings = settings
-        self.role = role
-        self.tools: ToolRegistry = default_registry()
+        self.config = config
+        self.role = role or config.runtime.default_role
+        self.tools: ToolRegistry = load_registry(config.tools_path)
+        self.system_prompt = config.read_prompt("system.md", FALLBACK_SYSTEM_PROMPT)
 
     async def run(
         self,
@@ -118,8 +121,8 @@ class AgentScopeRuntime:
             reason=resolved.reason,
         )
 
-        model = _build_chat_model(resolved.spec, self.settings)
-        agent = Agent(name="assistant", system_prompt=SYSTEM_PROMPT, model=model)
+        model = _build_chat_model(resolved.spec)
+        agent = Agent(name="assistant", system_prompt=self.system_prompt, model=model)
 
         await scope.checkpoint("before_model_call")
         reply = await agent.reply(user_input)
@@ -128,26 +131,25 @@ class AgentScopeRuntime:
         return _as_text(reply)
 
 
-def _build_chat_model(spec: Any, settings: Settings) -> Any:
-    """按 provider 造 ChatModel。provider 名称对应 models.yaml。"""
-    from agentscope.model import (  # noqa: F401  (延迟导入，避免没装时影响启动)
-        DashScopeChatModel,
-        DeepSeekChatModel,
-        OllamaChatModel,
-        OpenAIChatModel,
-    )
-    from agentscope.credential import (  # noqa: F401
+def _build_chat_model(spec: Any) -> Any:
+    """按 provider 造 ChatModel。provider 名称对应 config/models.yaml。"""
+    from agentscope.credential import (  # noqa: F401  (延迟导入，没装时不影响启动)
         DashScopeCredential,
         DeepSeekCredential,
         OllamaCredential,
         OpenAICredential,
     )
+    from agentscope.model import (  # noqa: F401
+        DashScopeChatModel,
+        DeepSeekChatModel,
+        OllamaChatModel,
+        OpenAIChatModel,
+    )
 
     p = spec.provider
     if p == "local":
         return OllamaChatModel(
-            credential=OllamaCredential(base_url=spec.base_url or settings.ollama_base_url),
-            model=spec.model,
+            credential=OllamaCredential(base_url=spec.base_url), model=spec.model
         )
     if p == "ds":
         return DeepSeekChatModel(credential=DeepSeekCredential(api_key=spec.api_key), model=spec.model)
@@ -169,20 +171,20 @@ def _as_text(reply: Any) -> str:
     return str(reply)
 
 
-def build_runtime(settings: Settings, router: ModelRouter) -> Runtime:
-    backend = settings.agent_backend.lower()
+def build_runtime(config: AppConfig, router: ModelRouter) -> Runtime:
+    backend = config.runtime.agent_backend.lower()
     has_agentscope = importlib.util.find_spec("agentscope") is not None
 
     if backend == "echo":
         return EchoRuntime()
     if backend == "agentscope":
         if not has_agentscope:
-            raise RuntimeError("AGENT_BACKEND=agentscope 但未安装：pip install 'agentscope>=2.0'")
-        return AgentScopeRuntime(router, settings)
+            raise RuntimeError("agent_backend=agentscope 但未安装：pip install 'agentscope>=2.0'")
+        return AgentScopeRuntime(router, config)
     # auto
     if has_agentscope:
         try:
-            return AgentScopeRuntime(router, settings)
+            return AgentScopeRuntime(router, config)
         except Exception as e:  # 配错模型也别让服务起不来
             log.warning("AgentScope 初始化失败(%s)，降级 echo", e)
             return EchoRuntime()

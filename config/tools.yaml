@@ -1,0 +1,24 @@
+# ============================================================
+# 工具注册表。新增/停用/调权限都改这里，不改代码。
+#
+# handler 指向 app/agent/tools.py 里的 HANDLERS 表。
+# 三个必填契约缺一不可：
+#   side_effect  none / reversible / external  → 决定取消时要不要补偿
+#   permission   L0..L3                        → 决定要不要过确认闸门
+#   enabled      停用工具不用删代码，改 false 即可
+# ============================================================
+
+tools:
+  - name: notes.create
+    handler: notes_create
+    description: 把一句话记进收件箱，低风险，不需要确认
+    side_effect: reversible
+    permission: L1
+    enabled: true
+
+  - name: time.now
+    handler: time_now
+    description: 取当前时间。注意：评测时必须用冻结时间替代
+    side_effect: none
+    permission: L0
+    enabled: true

@@ -24,9 +24,9 @@ services:
       db:
         condition: service_healthy
     environment:
+      # 容器里只覆盖这三项；其余全部来自挂载进来的 config/app.yaml
       DATABASE_URL: postgresql://assistant:assistant@db:5432/assistant
       AGENT_BACKEND: ${AGENT_BACKEND:-auto}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
     ports:

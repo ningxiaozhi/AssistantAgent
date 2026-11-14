@@ -3,6 +3,8 @@
 启动顺序刻意做成"任何一环挂掉都不影响服务起来"：
   数据库连不上 → 内存模式；模型配置坏了 → echo 模式。
 骨架的第一体验必须是 `uvicorn app.main:app` 一把就能打开 /docs。
+
+所有配置来自 config/ 目录（见 app/config.py），代码里不再有硬编码的地址和预算。
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from fastapi import FastAPI
 from app.agent.factory import Runtime, build_runtime
 from app.agent.routing import ModelRouter
 from app.api.routes import router as api_router
-from app.config import Settings, get_settings
+from app.config import AppConfig, ConfigError
 from app.core.cancel import TaskRegistry
 from app.core.runner import TaskRunner
 from app.db.pool import Database
@@ -28,7 +30,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class AppContext:
-    settings: Settings
+    config: AppConfig
     db: Database
     repo: Any
     registry: TaskRegistry
@@ -46,34 +48,34 @@ class _NullRouter:
         return {}
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or get_settings()
+def create_app(config: AppConfig | None = None) -> FastAPI:
+    cfg = config or AppConfig.load()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logging.basicConfig(
-            level=getattr(logging, settings.log_level.upper(), logging.INFO),
+            level=getattr(logging, cfg.server.log_level.upper(), logging.INFO),
             format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         )
 
-        db = Database(settings.database_url, settings.db_pool_min, settings.db_pool_max)
-        await db.connect()
+        db = Database(cfg.database.dsn, cfg.database.pool_min, cfg.database.pool_max)
+        await db.connect(timeout=cfg.database.connect_timeout_s)
         repo = PostgresTaskRepo(db) if db.available else InMemoryTaskRepo()
 
         try:
-            router = ModelRouter(settings.models_config_path, settings.force_local_on_sensitive)
+            router = ModelRouter(cfg.models_path, cfg.runtime.force_local_on_sensitive)
             model_version = ",".join(f"{k}={v}" for k, v in router.snapshot().items())
         except Exception as e:
             log.error("模型配置加载失败（%s），路由退化为空", e)
             router = _NullRouter()
             model_version = "unknown"
 
-        runtime = build_runtime(settings, router)  # type: ignore[arg-type]
+        runtime = build_runtime(cfg, router)  # type: ignore[arg-type]
         sink = PostgresTraceSink(db) if db.available else None
-        runner = TaskRunner(repo, TaskRegistry(), runtime, settings, sink)
+        runner = TaskRunner(repo, TaskRegistry(), runtime, cfg, sink)
 
         app.state.ctx = AppContext(
-            settings=settings,
+            config=cfg,
             db=db,
             repo=repo,
             registry=runner.registry,
@@ -83,7 +85,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model_version=model_version,
         )
         log.info(
-            "启动完成 | db=%s | agent=%s | roles=%d",
+            "启动完成 | config=%s | db=%s | agent=%s | roles=%d",
+            cfg.config_dir,
             "postgres" if db.available else "memory",
             runtime.name,
             len(router.all_roles()),
@@ -104,11 +107,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+try:
+    app = create_app()
+except ConfigError as _e:  # 配置缺失时不要 import 就炸，交给启动日志说清楚
+    log.error("配置加载失败: %s", _e)
+    raise
 
 
 if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
-    s = get_settings()
-    uvicorn.run("app.main:app", host=s.host, port=s.port, reload=True)
+    _cfg = AppConfig.load()
+    uvicorn.run("app.main:app", host=_cfg.server.host, port=_cfg.server.port, reload=True)

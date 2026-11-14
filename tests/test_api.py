@@ -4,17 +4,16 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.config import AppConfig
 from app.main import create_app
 
 
 def _client() -> TestClient:
-    settings = Settings(
-        database_url="postgresql://127.0.0.1:1/none",  # 必然连不上 → 内存模式
-        agent_backend="echo",
-        log_level="WARNING",
-    )
-    return TestClient(create_app(settings))
+    cfg = AppConfig.load()
+    cfg.database.dsn = "postgresql://127.0.0.1:1/none"  # 必然连不上 → 内存模式
+    cfg.runtime.agent_backend = "echo"
+    cfg.server.log_level = "ERROR"
+    return TestClient(create_app(cfg))
 
 
 class TestApi(unittest.TestCase):

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+import yaml
 
 NONE = "none"
 REVERSIBLE = "reversible"
@@ -102,24 +103,53 @@ async def _time_now(args: dict[str, Any]) -> ToolResult:
     )
 
 
+# handler 名 → 实现。config/tools.yaml 里的 handler 字段指向这里。
+HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[ToolResult]]] = {
+    "notes_create": _notes_create,
+    "time_now": _time_now,
+}
+
+DEFAULT_TOOLS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "tools.yaml"
+
+
 def default_registry() -> ToolRegistry:
+    """没有配置文件时的兜底（测试、脚本里直接用）。"""
+    return load_registry(DEFAULT_TOOLS_PATH)
+
+
+def load_registry(path: str | Path) -> ToolRegistry:
+    """从 config/tools.yaml 装配工具表。
+
+    配置决定：装哪些、叫什么名、什么副作用等级、什么权限、开不开。
+    代码只提供 handler 实现。想停用某个工具，改 enabled: false 即可，不用动代码。
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"工具配置不存在: {p}")
+
+    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    items = raw.get("tools")
+    if not isinstance(items, list):
+        raise ValueError(f"{p}: 顶层必须是 tools: [...] 列表")
+
     reg = ToolRegistry()
-    reg.register(
-        Tool(
-            name="notes.create",
-            description="把一句话记进收件箱，不需要确认",
-            side_effect=REVERSIBLE,
-            permission="L1",
-            handler=_notes_create,
+    for item in items:
+        if not item.get("enabled", True):
+            continue
+        handler_name = item.get("handler", "")
+        handler = HANDLERS.get(handler_name)
+        if handler is None:
+            raise ValueError(
+                f"{p}: 工具 {item.get('name')} 引用了未知 handler '{handler_name}'"
+                f"（可用：{', '.join(sorted(HANDLERS))}）"
+            )
+        reg.register(
+            Tool(
+                name=item["name"],
+                description=item.get("description", ""),
+                side_effect=item.get("side_effect", NONE),
+                permission=item.get("permission", "L2"),
+                handler=handler,
+            )
         )
-    )
-    reg.register(
-        Tool(
-            name="time.now",
-            description="取当前时间。注意：评测时必须用冻结时间替代",
-            side_effect=NONE,
-            permission="L0",
-            handler=_time_now,
-        )
-    )
     return reg

@@ -1,0 +1,38 @@
+# ============================================================
+# AssistantAgent 主配置。改这里不需要动代码。
+#
+# 分层原则：
+#   1. 本文件 = 非敏感配置的唯一来源（进版本库，可 review、可 diff）
+#   2. .env    = 只有密钥（API Key）和容器覆盖项（不进版本库）
+#   3. 环境变量 = 覆盖本文件里的少数几项（DATABASE_URL / AGENT_BACKEND / HOST / PORT / LOG_LEVEL）
+#
+# 拼错字段名会直接启动失败（extra="forbid"）—— 宁可起不来，也别带着错配置静默运行。
+# ============================================================
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: INFO            # DEBUG / INFO / WARNING / ERROR
+
+database:
+  # 容器里由 DATABASE_URL 覆盖成 postgresql://assistant:assistant@db:5432/assistant
+  dsn: postgresql://assistant:assistant@127.0.0.1:5432/assistant
+  pool_min: 1
+  pool_max: 5
+  connect_timeout_s: 3.0     # 连不上就降级内存模式，别卡住启动
+
+runtime:
+  agent_backend: auto        # auto（有 agentscope 就用）/ agentscope / echo
+  default_role: planner      # 主循环用哪个角色
+  force_local_on_sensitive: true   # 敏感任务强制本地模型，不信模型自报
+
+limits:
+  max_steps: 8               # 单任务最多几轮 ReAct
+  max_tokens: 120000         # 单任务 token 上限
+  max_usd_per_task: 0.15     # 单任务金额上限
+
+# 相对 config/ 目录的路径
+paths:
+  models: models.yaml
+  tools: tools.yaml
+  prompts: prompts

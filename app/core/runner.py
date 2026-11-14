@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any
 
-from app.config import Settings
+from app.config import AppConfig
 from app.core.cancel import TaskCancelled, TaskRegistry, TaskScope
 from app.core.tasks import (
     TaskState,
@@ -33,13 +33,13 @@ class TaskRunner:
         repo: Any,
         registry: TaskRegistry,
         runtime: Any,
-        settings: Settings,
+        config: AppConfig,
         sink: TraceSink | None = None,
     ) -> None:
         self.repo = repo
         self.registry = registry
         self.runtime = runtime
-        self.settings = settings
+        self.config = config
         self.sink = sink
         self._jobs: dict[str, asyncio.Task[Any]] = {}
 
