@@ -1,4 +1,4 @@
-"""Agent 运行时：一个接口，两个实现。
+﻿"""Agent 运行时：一个接口，两个实现。
 
 echo       —— 不需要任何模型就能跑通「状态机 → 安全点 → trace → 取消」整条链路
 agentscope —— 真实 Agent（需自行校准 API 版本，见下方注释）
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import logging
 from typing import Any, Protocol
 
@@ -262,12 +263,12 @@ class AgentScopeRuntime:
                 memory_hint = f"\n\n## 可能相关的记忆（先看索引，需要再取正文）\n{lines}"
 
         model = _build_chat_model(resolved.spec)
-        toolkit = _build_toolkit(tools)
+        toolkit = await _build_toolkit(tools)
         agent = Agent(
             name="assistant",
             system_prompt=self.system_prompt + memory_hint,
             model=model,
-            tools=toolkit,  # ⚠️ CALIBRATE #1：参数名可能是 toolkit=，用 scripts/check_agentscope.py 确认
+            toolkit=toolkit,  # 已对 agentscope 2.0.11 校准：参数名是 toolkit
         )
 
         await scope.checkpoint("before_model_call")
@@ -317,38 +318,50 @@ def _as_text(reply: Any) -> str:
     return str(reply)
 
 
-def _build_toolkit(registry: Any) -> Any:
+async def _build_toolkit(registry: Any) -> Any:
     """把我们的 ToolRegistry 转成 AgentScope 的 Toolkit。
 
-    ⚠️ CALIBRATE #2：Toolkit 的注册方式在各小版本间变过（register / add_function / 装饰器）。
-    这里按"注册一个 async 函数"的通用形状写，装配失败就降级为不带工具，
-    绝不让工具注册把整个会话搞挂。
+    真实形态（已对 agentscope 2.0.11 校准）：
+      agentscope.tool.Toolkit()            ← 注意是 .tool，不是 .toolkit
+      toolkit.add_tool(FunctionTool(...))  ← 不是 register
+      被调函数返回 ToolChunk(content=[TextBlock(...)])
 
-    返回值约定：统一成 {ok, data, error} 字典——
-    模型看到的是这个结构，而不是我们的内部对象。
+    装配失败就降级为不带工具，绝不让工具注册把整个会话搞挂。
     """
     if registry is None:
         return None
     try:
-        from agentscope.toolkit import Toolkit
-    except ImportError:
-        log.warning("找不到 agentscope.toolkit.Toolkit，本次不挂载工具")
+        from agentscope.message import TextBlock
+        from agentscope.tool import FunctionTool, ToolChunk, Toolkit
+    except ImportError as e:
+        log.warning("AgentScope 工具接口不可用（%s），本次不挂载工具", e)
         return None
 
     toolkit = Toolkit()
     for tool in registry:
 
-        async def _call(_tool=tool, **kwargs):
+        async def _call(_tool=tool, **kwargs) -> Any:
             result = await _tool.handler(kwargs)
-            return {"ok": result.ok, "data": result.data, "error": result.error}
+            payload = {"ok": result.ok, "data": result.data, "error": result.error}
+            return ToolChunk(
+                content=[TextBlock(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))],
+                is_last=True,
+            )
 
         _call.__name__ = tool.name.replace(".", "_")
         _call.__doc__ = tool.description
         try:
-            toolkit.register(_call)
-        except AttributeError:
-            log.warning("Toolkit.register 不可用，工具 %s 未注册", tool.name)
-            return None
+            await toolkit.add_tool(
+                FunctionTool(
+                    _call,
+                    name=tool.name.replace(".", "_"),
+                    description=tool.description,
+                    input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+                    is_read_only=(tool.side_effect == "none"),
+                )
+            )
+        except Exception as e:
+            log.warning("工具 %s 注册失败：%s", tool.name, e)
     return toolkit
 
 

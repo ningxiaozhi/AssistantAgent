@@ -1,8 +1,10 @@
 # 接真实 AgentScope：四步 + 三个校准点
 
-> 现状：仓库里的 `AgentScopeRuntime` 是照官方文档写的，**没有对着真实安装版本跑过**
-> （开发机上 PyPI 不可达）。下面这套流程的每一步都有对应的验证手段，
-> 照着走，20 分钟内能确认它到底能不能用。
+> **2026-11-14 更新：已对 agentscope 2.0.11 完成校准。**
+> `Agent(..., toolkit=)` 能构造、工具能装配进 `Toolkit` 并真实调用（7 条契约测试全过）。
+> 还差的只有"跑一次真实对话"，那需要本地起 Ollama 或有可用的 API Key。
+>
+> 下面保留完整流程——将来升级 agentscope 大版本时，按同样的四步重新对一遍即可。
 
 ---
 
@@ -99,14 +101,18 @@ curl -X POST localhost:8000/api/chat -H "Content-Type: application/json" \
 
 ## 三个校准点（对不上就改这三处）
 
-| 位置 | 我们假设的写法 | 对不上时怎么改 |
-|---|---|---|
-| **CALIBRATE #1** | `Agent(..., tools=toolkit)` | `check_agentscope.py` 会说实际参数名是 `toolkit` 还是 `tools` |
-| **CALIBRATE #2** | `toolkit.register(fn)` | 有的版本是 `add_function` / `add` / 装饰器 |
-| **CALIBRATE #3** | `ChatModel(credential=..., model=...)` | 自检会打印真实签名；不是 `credential` 就按签名改 |
+2026-11-14 在 **agentscope 2.0.11** 上实测的结果（已写进代码）：
 
-改完之后 `python -m unittest tests.test_agentscope_adapter` 应该全绿——
-这组测试就是专门用来钉这三个校准点的。
+| 位置 | 实测值 | 说明 |
+|---|---|---|
+| **CALIBRATE #1** | `Agent(..., toolkit=toolkit)` | 参数名是 `toolkit`，不是 `tools` |
+| **CALIBRATE #2** | `agentscope.tool.Toolkit` + `await toolkit.add_tool(FunctionTool(...))` | 模块是 `agentscope.tool`（不是 `.toolkit`）；`add_tool` 是协程 |
+| **CALIBRATE #3** | `ChatModel(credential=..., model=...)` | 与假设一致 |
+
+工具函数的返回约定：必须返回 `ToolChunk(content=[TextBlock(type="text", text="...")], is_last=True)`，
+不是普通 dict。`_build_toolkit()` 里已经按这个包了一层。
+
+如果升级后自检报错，改的就是这三处；改完跑 `python -m unittest tests.test_agentscope_adapter` 验证。
 
 ---
 

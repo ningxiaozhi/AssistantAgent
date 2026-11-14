@@ -1,4 +1,4 @@
-# ---- python ----
+﻿# ---- python ----
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -13,6 +13,9 @@ venv/
 .env.local
 *.key
 *.pem
+
+agentscope-report.txt
+.piptmp/
 
 # ---- 本地数据 ----
 data/

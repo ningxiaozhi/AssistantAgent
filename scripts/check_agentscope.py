@@ -1,127 +1,193 @@
-"""AgentScope 适配自检：把你机器上装的版本和我们代码里的假设对一遍。
+﻿"""AgentScope 适配自检：把你机器上装的版本和我们代码里的假设对一遍。
 
     python scripts/check_agentscope.py
+    python scripts/check_agentscope.py --json      # 机器可读
 
-为什么要这个脚本：
-  仓库里的 AgentScope 适配是照官方文档写的，但文档和实际安装版本之间总有差异
-  （参数名、Toolkit 注册方式、Credential 构造）。与其让你跑起来报一个
-  `TypeError: unexpected keyword 'tools'` 再猜，不如先跑这个，一次性列出所有不一致。
+重要：这个脚本**只看已安装的 agentscope 包**，不看我们的代码。
+所以 ❌ 不会因为你改了 factory.py 而消失——它的含义是
+"你装的版本里没有这个东西"，你要做的是把 factory.py 改成它实际的样子。
 
-退出码：0 全部对得上；1 有需要改的地方（会明确告诉你改哪一行）。
+退出码：0 全部对得上；1 有需要改的地方。
+报告同时写入 agentscope-report.txt，方便直接贴给同事/贴进 issue。
 """
 from __future__ import annotations
 
 import importlib
 import inspect
+import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-OK, BAD, SKIP = "✅", "❌", "⚠️ "
+OK, BAD, WARN = "✅", "❌", "⚠️ "
+
+# 符号可能出现的模块路径（不同小版本挪过位置）
+AGENT_MODULES = ("agentscope.agent",)
+MODEL_MODULES = ("agentscope.model",)
+CRED_MODULES = ("agentscope.credential", "agentscope.credentials", "agentscope.model")
+TOOLKIT_MODULES = ("agentscope.toolkit", "agentscope.tool", "agentscope.tools")
+PERM_MODULES = ("agentscope.permission", "agentscope.permissions")
+
+CHAT_MODELS = ("OllamaChatModel", "DeepSeekChatModel", "DashScopeChatModel", "OpenAIChatModel")
+CREDENTIALS = ("OllamaCredential", "DeepSeekCredential", "DashScopeCredential", "OpenAICredential")
 
 
-def _has(mod_name: str, attr: str) -> tuple[bool, object | None]:
+class Check:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def add(self, ok: bool, name: str, hint: str = "", fix: str = "") -> None:
+        self.rows.append({"ok": ok, "name": name, "hint": hint, "fix": fix})
+
+    @property
+    def failed(self) -> list[dict]:
+        return [r for r in self.rows if not r["ok"]]
+
+
+def find(mod_names: tuple[str, ...], attr: str) -> tuple[bool, object | None, str | None]:
+    for mod_name in mod_names:
+        try:
+            mod = importlib.import_module(mod_name)
+        except ImportError:
+            continue
+        obj = getattr(mod, attr, None)
+        if obj is not None:
+            return True, obj, mod_name
+    return False, None, None
+
+
+def safe_signature(obj) -> list[str] | None:
     try:
-        mod = importlib.import_module(mod_name)
-    except ImportError:
-        return False, None
-    obj = getattr(mod, attr, None)
-    return obj is not None, obj
+        return list(inspect.signature(obj.__init__).parameters)
+    except (ValueError, TypeError):
+        return None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    as_json = "--json" in (argv or sys.argv[1:])
     try:
         import agentscope
     except ImportError:
         print(f"{BAD} 未安装 agentscope。先执行：pip install 'agentscope>=2.0'")
         return 1
 
-    print(f"agentscope 版本：{getattr(agentscope, '__version__', '未知')}\n")
-    results: list[tuple[bool, str, str]] = []
+    version = getattr(agentscope, "__version__", "未知")
+    ck = Check()
 
-    # ---- 1. Agent 构造参数 ----
-    ok, Agent = _has("agentscope.agent", "Agent")
+    # ---- 1. Agent ----
+    ok, Agent, where = find(AGENT_MODULES, "Agent")
     if not ok:
-        results.append((False, "agentscope.agent.Agent", "类不存在，包结构可能变了"))
-        print_report(results)
-        return 1
+        ck.add(False, "agentscope.agent.Agent", "类不存在，包结构可能变了", "确认 pip show agentscope 的版本")
+        return report(ck, version, as_json)
 
-    params = list(inspect.signature(Agent.__init__).parameters)
+    params = safe_signature(Agent) or []
     for name in ("name", "system_prompt", "model"):
-        results.append((name in params, f"Agent(... {name}=)", f"现签名：{params}"))
+        ck.add(name in params, f"Agent(... {name}=)", f"实际签名：{params}",
+               f"factory.py 里去掉 {name} 或改名" if name not in params else "")
 
-    tools_key = next((k for k in ("tools", "toolkit") if k in params), None)
-    results.append(
-        (
-            tools_key is not None,
-            "Agent(... tools=)",
-            f"实际参数名是 {tools_key or '（没有）'} → 改 app/agent/factory.py 的 CALIBRATE #1",
-        )
+    tools_key = next((k for k in ("tools", "toolkit", "tool_list") if k in params), None)
+    ck.add(
+        tools_key is not None,
+        f"Agent(... {tools_key}=)",
+        f"实际参数名是 {tools_key}" if tools_key else f"实际签名：{params}",
+        f"把 factory.py 的 `tools=toolkit` 改成 `{tools_key}=toolkit`" if tools_key else
+        "该版本 Agent 不接受工具参数，需要改用 Toolkit 的其它挂载方式",
     )
 
-    # ---- 2. 对话入口 ----
-    results.append((hasattr(Agent, "reply"), "Agent.reply()", "没有 reply，可能是 0.x 的 __call__ 接口"))
-    results.append(
-        (hasattr(Agent, "reply_stream"), "Agent.reply_stream()", "没有流式接口，SSE 会拿不到增量事件")
-    )
+    has_reply = hasattr(Agent, "reply")
+    ck.add(has_reply, "Agent.reply()", "没有 reply，可能是 0.x 的 __call__ 接口",
+           "factory.py 里改成 await agent(msg)" if not has_reply else "")
 
-    # ---- 3. ChatModel ----
-    for cls in ("OllamaChatModel", "DeepSeekChatModel", "DashScopeChatModel", "OpenAIChatModel"):
-        ok, obj = _has("agentscope.model", cls)
-        results.append((ok, f"agentscope.model.{cls}", "类不存在 → 改 _build_chat_model"))
+    has_stream = hasattr(Agent, "reply_stream")
+    ck.add(has_stream, "Agent.reply_stream()", "没有流式接口，SSE 拿不到增量事件",
+           "流式降级：先只做一次性 reply" if not has_stream else "")
 
-    ok, ollama = _has("agentscope.model", "OllamaChatModel")
+    # ---- 2. ChatModel ----
+    for cls in CHAT_MODELS:
+        ok, obj, where = find(MODEL_MODULES, cls)
+        ck.add(ok, f"agentscope.model.{cls}", "类不存在", f"删掉 _build_chat_model 里 {cls} 的分支" if not ok else "")
+
+    ok, ollama, _ = find(MODEL_MODULES, "OllamaChatModel")
     if ok and ollama is not None:
-        mparams = list(inspect.signature(ollama.__init__).parameters)
-        results.append(
-            (
-                "credential" in mparams,
-                "ChatModel(credential=...)",
-                f"现签名：{mparams} → 不是 credential 就改 _build_chat_model",
-            )
-        )
+        mparams = safe_signature(ollama) or []
+        uses_cred = "credential" in mparams
+        ck.add(uses_cred, "ChatModel(credential=...)",
+               f"现签名：{mparams}",
+               "改 _build_chat_model：去掉 credential=，按签名传参" if not uses_cred else "")
 
-    # ---- 4. Credential ----
-    for cls in ("OllamaCredential", "DeepSeekCredential", "DashScopeCredential", "OpenAICredential"):
-        ok, _ = _has("agentscope.credential", cls)
-        results.append((ok, f"agentscope.credential.{cls}", "不存在 → 该 provider 的凭据类改名了"))
+    # ---- 3. Credential ----
+    for cls in CREDENTIALS:
+        ok, _, where = find(CRED_MODULES, cls)
+        ck.add(ok, f"{cls}", f"在 {CRED_MODULES} 里都没找到",
+               "如果 ChatModel 不收 credential，这个类可能也不存在，删掉对应分支" if not ok else "")
 
-    # ---- 5. Toolkit ----
-    ok, Toolkit = _has("agentscope.toolkit", "Toolkit")
+    # ---- 4. Toolkit ----
+    ok, Toolkit, where = find(TOOLKIT_MODULES, "Toolkit")
     if ok and Toolkit is not None:
-        methods = [m for m in ("register", "add_function", "add", "register_tool") if hasattr(Toolkit, m)]
-        results.append(
-            (
-                bool(methods),
-                "Toolkit 注册工具",
-                f"可用方法：{methods or '（都没找到）'} → 改 factory.py 的 CALIBRATE #2",
-            )
-        )
+        methods = [m for m in ("register", "add_function", "add", "register_tool", "add_tool") if hasattr(Toolkit, m)]
+        ck.add(bool(methods), "Toolkit 注册工具", f"可用方法：{methods or '（都没找到）'}",
+               f"把 factory.py 的 toolkit.register 改成 toolkit.{methods[0]}" if methods else
+               "该 Toolkit 没有注册接口，工具挂载方式需重写")
     else:
-        results.append((False, "agentscope.toolkit.Toolkit", "找不到 Toolkit，工具挂不上"))
+        ck.add(False, "Toolkit", f"在 {TOOLKIT_MODULES} 里都没找到", "找不到就不挂工具（factory.py 会自动降级）")
 
-    # ---- 6. 有没有权限系统（如果有，我们的闸门可以和它合并）----
-    ok, _ = _has("agentscope.permission", "PermissionMode")
-    results.append((ok, "agentscope.permission.PermissionMode", "有的话可以接管 L0–L3，替换我们自研闸门"))
+    # ---- 5. 权限系统 ----
+    ok, _, where = find(PERM_MODULES, "PermissionMode")
+    ck.add(ok, "PermissionMode", "有的话可以用它接管 L0–L3",
+           "" if ok else "没有就用我们的 PermissionGate（默认就是这样）")
 
-    print_report(results)
-    failed = [r for r in results if not r[0]]
-    print()
-    if failed:
-        print(f"{BAD} {len(failed)} 项对不上。按上面的提示改 app/agent/factory.py 里对应位置。")
-        return 1
-    print(f"{OK} 全部对得上，适配层应该可以直接用。")
-    return 0
+    return report(ck, version, as_json)
 
 
-def print_report(results: list[tuple[bool, str, str]]) -> None:
-    width = max(len(r[1]) for r in results) + 2
-    for ok, name, hint in results:
-        mark = OK if ok else BAD
-        line = f"{mark} {name:<{width}}"
-        print(line + ("" if ok else f"  ← {hint}"))
+def report(ck: Check, version: str, as_json: bool) -> int:
+    failed = ck.failed
+    if as_json:
+        print(json.dumps({"version": version, "rows": ck.rows, "failed": len(failed)}, ensure_ascii=False, indent=2))
+        return 0 if not failed else 1
+
+    print(f"agentscope 版本：{version}\n")
+    width = max(len(r["name"]) for r in ck.rows) + 2
+    for r in ck.rows:
+        mark = OK if r["ok"] else BAD
+        line = f"{mark} {r['name']:<{width}}"
+        if not r["ok"]:
+            line += f"  {r['hint']}"
+        print(line)
+
+    lines = [f"agentscope {version}", ""]
+    lines += [f"{OK if r['ok'] else BAD} {r['name']}" + ("" if r["ok"] else f" — {r['hint']}") for r in ck.rows]
+
+    if not failed:
+        print(f"\n{OK} 全部对得上，适配层应该可以直接用。")
+        print(f"   下一步：$env:AGENT_BACKEND=\"agentscope\" 然后启动服务，/health 里 agent 应为 agentscope")
+        _save(lines, 0)
+        return 0
+
+    print(f"\n{BAD} {len(failed)} 项对不上。**注意：这里描述的是你装的包，不是我们的代码。**")
+    print("   改完之后这些 ❌ 也不会自动消失 —— 改对了它们才消失。\n")
+    print("要改的地方：")
+    for r in failed:
+        if r["fix"]:
+            print(f"  · {r['name']}")
+            print(f"      → {r['fix']}")
+    print("\n把下面这段贴给我就能定位：")
+    print("  " + "─" * 56)
+    for r in failed:
+        print(f"  {r['name']} | {r['hint']}")
+    print("  " + "─" * 56)
+
+    _save(lines, 1)
+    return 1
+
+
+def _save(lines: list[str], code: int) -> None:
+    try:
+        Path(ROOT / "agentscope-report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"\n（报告已写入 agentscope-report.txt）")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-﻿# AssistantAgent
+# AssistantAgent
 
 > 个人助理 Agent —— 学习 / 工作 / 生活，**一个入口，六层分工，五条铁律**。
 
@@ -24,11 +24,12 @@
 | Postgres schema（含 pgvector） | ✅ 可用 | `app/db/schema.sql` |
 | Postgres 存储（wiki / 向量） | 🚧 代码就绪，需在真库验证 | `scripts/check_pg.py` |
 | 离线评测（案例/跑批/计分卡） | ✅ 可用 | `eval/` |
-| **AgentScope 接入** | ⚠️ EXPERIMENTAL | [接入指南](docs/integration-agentscope.md) |
+| **AgentScope 接入** | ✅ 已对 2.0.11 校准 | [接入指南](docs/integration-agentscope.md) |
 
-> 说明：AgentScope 适配层是照官方文档写的，没对着真实版本跑过（开发机 PyPI 不可达）。
-> 装完 agentscope 跑一次 `python scripts/check_agentscope.py`，它会逐条告诉你哪里对不上。
-> 其余代码有测试覆盖：`python -m unittest discover -s tests` 97 条通过（5 条 AgentScope 契约测试在未安装时自动跳过）。
+> 说明：AgentScope 适配层已在 2.0.11 上实测——`Agent(toolkit=)` 可构造，工具能装配进
+> `Toolkit` 并真实调用。还差的只有「真实对话」这一步，需要本地 Ollama 或 API Key。
+> 升级大版本后跑 `python scripts/check_agentscope.py` 重新对一遍。
+> 其余代码有测试覆盖：`python -m unittest discover -s tests`。
 
 ---
 
